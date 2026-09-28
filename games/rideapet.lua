@@ -368,8 +368,6 @@ function RideAPet.Init(Window, WindUI)
     local AutoPlaceBlockedEggs = {}
     local MyPlotCFrame = nil
 
-    local MOVEMENT_MODE_OPTIONS = { "บิน (Tween ลื่นๆ)", "วาป (Teleport ทันที)" }
-    local CurrentMovementMode = "วาป (Teleport ทันที)"
 
     local statusParagraph = nil
     local function setStatus(text)
@@ -438,20 +436,6 @@ function RideAPet.Init(Window, WindUI)
                 end
             end
         end
-    end
-
-    local function tweenTo(targetCFrame, speed)
-        local char = LocalPlayer.Character
-        local hrp = char and char:FindFirstChild("HumanoidRootPart")
-        if not hrp then return end
-
-        local distance = (hrp.Position - targetCFrame.Position).Magnitude
-        local time = math.clamp(distance / (speed or 40), 0.3, 3)
-
-        local tweenInfo = TweenInfo.new(time, Enum.EasingStyle.Linear)
-        local tween = TweenService:Create(hrp, tweenInfo, { CFrame = targetCFrame })
-        tween:Play()
-        tween.Completed:Wait()
     end
 
     local function saveHomePosition()
@@ -783,25 +767,9 @@ function RideAPet.Init(Window, WindUI)
 
     -- ============================================================
     -- ระบบเก็บไข่ (ทำตามขั้นตอนที่เกมตรวจสอบ)
-    -- 1) ต้องขี่สัตว์เลี้ยงก่อน  2) วาปไปหาไข่  3) ยิง prompt + ส่ง UUID ของไข่ให้ remote
-    -- 4) รอให้ไข่เข้า Basket/มือ แล้วหน่วงให้เซิร์ฟเวอร์ยืนยัน  5) วาปกลับฐาน + ฝากไข่จาก Basket
-    -- ถ้าวาปกลับทันทีหรือไม่ได้ส่ง UUID เกมจะคืนไข่ ("Your Egg Was Returned")
+    -- 1) บิน (Tween) ไปหาไข่  2) ยิง prompt + ส่ง UUID ของไข่ให้ remote
+    -- 3) รอให้ไข่เข้า Basket/มือ แล้วหน่วงให้เซิร์ฟเวอร์ยืนยัน  4) บินกลับฐาน + ฝากไข่จาก Basket
     -- ============================================================
-    local CollectionService = game:GetService("CollectionService")
-    local Remote_Mounting = GameRemotes and GameRemotes:FindFirstChild("Mounting")
-    local Remote_PetDismount = GameRemotes and GameRemotes:FindFirstChild("PetDismount")
-    local Remote_PickupPet = GameRemotes and GameRemotes:FindFirstChild("PickupPet")
-
-    local GamePetsData = {}
-    pcall(function()
-        local gd = ReplicatedStorage:FindFirstChild("GameData")
-        local m = gd and gd:FindFirstChild("Pets")
-        if m then
-            local d = require(m)
-            if type(d) == "table" then GamePetsData = d end
-        end
-    end)
-
     local function getChar()
         local char = LocalPlayer.Character
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -949,96 +917,6 @@ function RideAPet.Init(Window, WindUI)
         return nil
     end
 
-    local function cleanPetName(name)
-        local s = tostring(name or ""):gsub("%s*%b[]", ""):gsub("%s*%b()", "")
-        s = s:gsub("^%s+", ""):gsub("%s+$", "")
-        return s
-    end
-
-    local function isPetTool(item)
-        return item:IsA("Tool") and (item:GetAttribute("PetName") or item:GetAttribute("PetKey") or CollectionService:HasTag(item, "Pet"))
-    end
-
-    -- ขี่สัตว์เลี้ยงที่เร็วที่สุด (เกมต้องให้ขี่ก่อนถึงจะเก็บไข่ได้)
-    local function mountBestPet()
-        local char, hrp, hum = getChar()
-        if not char or not hrp or not hum then return false end
-
-        local function speedOf(name)
-            local d = GamePetsData[cleanPetName(name)] or GamePetsData[name] or {}
-            return d.Speed or d.RideSpeed or 50
-        end
-
-        local bestTool, bestKey, bestSpeed, bestName = nil, nil, -1, ""
-
-        local held = char:FindFirstChildOfClass("Tool")
-        if held and isPetTool(held) then
-            local n = held:GetAttribute("PetName") or held.Name
-            bestTool, bestSpeed, bestName = held, speedOf(n), n
-        end
-
-        local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
-        if backpack then
-            for _, item in ipairs(backpack:GetChildren()) do
-                if isPetTool(item) then
-                    local n = item:GetAttribute("PetName") or item.Name
-                    local s = speedOf(n)
-                    if s > bestSpeed then bestTool, bestKey, bestSpeed, bestName = item, nil, s, n end
-                end
-            end
-        end
-
-        local plot = getMyPlot()
-        local petsFolder = plot and plot:FindFirstChild("Pets")
-        if petsFolder then
-            for _, p in ipairs(petsFolder:GetChildren()) do
-                local n = p:GetAttribute("PetName") or p.Name
-                local key = p:GetAttribute("PetKey")
-                local s = speedOf(n)
-                if key and s > bestSpeed then bestTool, bestKey, bestSpeed, bestName = nil, key, s, n end
-            end
-        end
-
-        if not bestTool and not bestKey then return false end
-
-        local joint = hrp:FindFirstChild("PetMountJoint")
-        local riding = LocalPlayer:GetAttribute("IsRiding") == true or joint ~= nil
-        local cleanBest = cleanPetName(bestName)
-        if riding and joint and joint.Part1 and joint.Part1.Parent and joint.Part1.Parent.Name:find(cleanBest, 1, true) then
-            return true
-        end
-        if riding and Remote_PetDismount then
-            Remote_PetDismount:FireServer()
-            task.wait(0.3)
-        end
-
-        if bestKey and Remote_PickupPet then
-            Remote_PickupPet:FireServer(bestKey)
-            task.wait(0.3)
-            local bp2 = LocalPlayer:FindFirstChildOfClass("Backpack")
-            if bp2 then
-                for _, item in ipairs(bp2:GetChildren()) do
-                    if item:IsA("Tool") and item:GetAttribute("PetKey") == bestKey then bestTool = item break end
-                end
-            end
-        end
-
-        if bestTool then
-            if bestTool.Parent ~= char then
-                pcall(function() hum:UnequipTools() end)
-                task.wait(0.08)
-                pcall(function() hum:EquipTool(bestTool) end)
-                task.wait(0.2)
-            end
-            if Remote_Mounting then
-                Remote_Mounting:FireServer()
-                task.wait(0.3)
-            end
-            return true
-        end
-        return false
-    end
-
     local function isEggTool(it)
         return it:IsA("Tool") and (it.Name:find("Egg") or it:GetAttribute("Egg") or it:GetAttribute("IsEgg"))
     end
@@ -1075,11 +953,32 @@ function RideAPet.Init(Window, WindUI)
 
     -- ตั้งค่าจังหวะเวลา (ปรับได้ใน UI) — เซิร์ฟเวอร์ต้องได้รับตำแหน่งใหม่ก่อนถึงจะยอมรับการเก็บ/การกลับฐาน
     local Settings = {
-        MountFirst = false, -- ระบบใหม่ของเกมไม่ต้องขี่สัตว์ก่อนเก็บ
-        ArriveDelay = 0.4,  -- รอหลังวาปถึงไข่ ก่อนกดเก็บ
-        SettleDelay = 1.0,  -- รอหลังเก็บได้ ก่อนวาปกลับ
+        FlySpeed = 275,     -- ความเร็วบิน (studs/วินาที)
+        ArriveDelay = 0.4,  -- รอหลังถึงไข่ ก่อนกดเก็บ
+        SettleDelay = 1.0,  -- รอหลังเก็บได้ ก่อนบินกลับ
         BaseDelay = 0.5,    -- รอหลังถึงฐาน ก่อนฝากไข่
     }
+
+    -- บินแบบ Tween ด้วยความเร็วคงที่ (ระยะทาง / ความเร็ว) ไม่ตัดเวลาสูงสุด
+    local function flyTo(pos)
+        local _, hrp = getChar()
+        if not hrp then return false end
+        local dist = (hrp.Position - pos).Magnitude
+        if dist < 0.8 then return true end
+
+        holdFlight(hrp)
+        local duration = math.max(dist / math.max(Settings.FlySpeed, 50), 0.03)
+        local target = CFrame.new(pos) * hrp.CFrame.Rotation
+        local tween = TweenService:Create(hrp, TweenInfo.new(duration, Enum.EasingStyle.Linear), { CFrame = target })
+        tween:Play()
+        tween.Completed:Wait()
+        pcall(function()
+            tween:Destroy()
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+        end)
+        return true
+    end
 
     local function processEggCollection(eggData)
         local char, hrp, hum = getChar()
@@ -1093,14 +992,6 @@ function RideAPet.Init(Window, WindUI)
         if basket and #basket:GetChildren() > 0 then
             depositBasket()
             task.wait(0.08)
-        end
-
-        if Settings.MountFirst and LocalPlayer:GetAttribute("IsRiding") ~= true then
-            setStatus("กำลังขี่สัตว์เลี้ยง...")
-            pcall(mountBestPet)
-            task.wait(0.12)
-            char, hrp, hum = getChar()
-            if not hrp then return false end
         end
 
         local model = eggData.model
@@ -1118,15 +1009,8 @@ function RideAPet.Init(Window, WindUI)
         setNoClip(true)
         holdFlight(hrp)
 
-        if CurrentMovementMode == "วาป (Teleport ทันที)" then
-            pcall(function()
-                hrp.CFrame = CFrame.new(targetPos)
-                hrp.AssemblyLinearVelocity = Vector3.zero
-                hrp.AssemblyAngularVelocity = Vector3.zero
-            end)
-        else
-            tweenTo(CFrame.new(targetPos), 45)
-        end
+        setStatus("กำลังบินไปหา " .. eggData.name .. "...")
+        flyTo(targetPos)
 
         -- รอให้เซิร์ฟเวอร์รับตำแหน่งใหม่ (เร็วเกินไป = ระยะเก็บไม่ผ่าน)
         task.wait(Settings.ArriveDelay)
@@ -1180,29 +1064,22 @@ function RideAPet.Init(Window, WindUI)
 
         local collected = false
         if pickupOk then
-            -- หน่วงให้เซิร์ฟเวอร์ยืนยันว่าไข่เป็นของเราแล้ว ก่อนวาปกลับ
+            -- หน่วงให้เซิร์ฟเวอร์ยืนยันว่าไข่เป็นของเราแล้ว ก่อนบินกลับ
             task.wait(Settings.SettleDelay)
             setStatus("เก็บ " .. eggData.name .. " แล้ว กำลังกลับบ้าน...")
 
             local basePos = getBasePos()
             if basePos then
                 pcall(function() LocalPlayer:RequestStreamAroundAsync(basePos) end)
-                pcall(function()
-                    hrp.CFrame = CFrame.new(basePos)
-                    hrp.AssemblyLinearVelocity = Vector3.zero
-                    hrp.AssemblyAngularVelocity = Vector3.zero
-                end)
+                flyTo(basePos)
                 task.wait(Settings.BaseDelay)
 
                 if not isOnMyPlot() then
-                    pcall(function()
-                        hrp.CFrame = CFrame.new(basePos)
-                        hrp.AssemblyLinearVelocity = Vector3.zero
-                    end)
+                    flyTo(basePos)
                     task.wait(Settings.BaseDelay)
                 end
             elseif MyPlotCFrame then
-                hrp.CFrame = MyPlotCFrame
+                flyTo(MyPlotCFrame.Position)
                 task.wait(Settings.BaseDelay)
             end
 
@@ -1215,10 +1092,10 @@ function RideAPet.Init(Window, WindUI)
             local basketLeft = b and #b:GetChildren() or 0
             collected = basketLeft == 0
             warn(string.format(
-                "[RideAPet] %s | signal=%s uuid=%s hold=%s basketLeft=%d onPlot=%s riding=%s carry=%.2fs",
+                "[RideAPet] %s | signal=%s uuid=%s hold=%s basketLeft=%d onPlot=%s carry=%.2fs",
                 eggData.name, tostring(signal), tostring(uuid ~= nil),
                 tostring(prompt and prompt.HoldDuration), basketLeft,
-                tostring(isOnMyPlot()), tostring(LocalPlayer:GetAttribute("IsRiding")),
+                tostring(isOnMyPlot()),
                 tick() - pickupTime
             ))
             setStatus(collected and ("เก็บ " .. eggData.name .. " เข้ากระเป๋าแล้ว") or "ไข่ยังค้างในตะกร้า — ลองฝากใหม่...")
@@ -1244,7 +1121,7 @@ function RideAPet.Init(Window, WindUI)
 
     secFarm:Toggle({
         Title = "เก็บไข่อัตโนมัติ (Auto Steal)",
-        Desc = "ไปเก็บไข่ที่ตรงเงื่อนไข แล้วกลับบ้านอัตโนมัติ",
+        Desc = "บินไปเก็บไข่ที่ตรงเงื่อนไข แล้วบินกลับบ้านอัตโนมัติ",
         Value = false,
         Callback = function(state)
             AutoFarmEnabled = state
@@ -1257,14 +1134,6 @@ function RideAPet.Init(Window, WindUI)
                 releaseFlight()
             end
         end,
-    })
-
-    secFarm:Dropdown({
-        Title = "วิธีไปเก็บไข่ (Movement)",
-        Desc = "บิน = Tween ไปหาไข่และบินกลับ | วาป = ไปถึงทันที",
-        Values = MOVEMENT_MODE_OPTIONS,
-        Value = "วาป (Teleport ทันที)",
-        Callback = function(selected) CurrentMovementMode = selected end,
     })
 
     local FarmDropdown = secFarm:Dropdown({
@@ -1281,11 +1150,12 @@ function RideAPet.Init(Window, WindUI)
         end,
     })
 
-    secFarm:Toggle({
-        Title = "ขี่สัตว์เลี้ยงก่อนเก็บ",
-        Desc = "ระบบใหม่ของเกมไม่ต้องขี่แล้ว เปิดเฉพาะถ้าเกมยังบังคับ",
-        Value = Settings.MountFirst,
-        Callback = function(state) Settings.MountFirst = state end,
+    secFarm:Slider({
+        Title = "ความเร็วบิน (Fly Speed)",
+        Desc = "บินแบบ Tween ไปเก็บไข่และกลับบ้าน แนะนำ 250-300",
+        Step = 5,
+        Value = { Min = 150, Max = 400, Default = Settings.FlySpeed },
+        Callback = function(v) Settings.FlySpeed = tonumber(v) or Settings.FlySpeed end,
     })
 
     secFarm:Slider({
@@ -1297,8 +1167,8 @@ function RideAPet.Init(Window, WindUI)
     })
 
     secFarm:Slider({
-        Title = "หน่วงก่อนวาปกลับ (วินาที)",
-        Desc = "รอหลังเก็บได้ ก่อนวาปกลับบ้าน ถ้าไข่ยังถูกคืนให้เพิ่มค่านี้",
+        Title = "หน่วงก่อนบินกลับ (วินาที)",
+        Desc = "รอหลังเก็บได้ ก่อนบินกลับบ้าน ถ้าไข่ยังถูกคืนให้เพิ่มค่านี้",
         Step = 0.05,
         Value = { Min = 0.1, Max = 4, Default = Settings.SettleDelay },
         Callback = function(v) Settings.SettleDelay = tonumber(v) or Settings.SettleDelay end,
