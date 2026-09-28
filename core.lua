@@ -30,6 +30,7 @@ local Core = {}
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
+local VirtualUser = game:GetService("VirtualUser")
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -63,17 +64,18 @@ local RVX = {
     ThemeIcon    = "#F09CFF",
 }
 
-local VERSION = "Core V3"
+local VERSION = "Version 1"
 
 -- ============================================================
 -- DEFAULTS
 -- ============================================================
 
 local DEFAULTS = {
-    Theme = "Violet",
+    Theme = "Crimson",
 
     Transparency = 0.08,
-    BackgroundImageTransparency = 0.50,
+    BackgroundImageTransparency = 1,
+    PanelBackground = Color3.fromRGB(18, 12, 24),
     PanelBackgroundEnabled = true,
 
     ToggleKey = "RightShift",
@@ -97,6 +99,9 @@ local DEFAULTS = {
 local State = {
     MapName = "RVX Hub",
     Window = nil,
+
+    AntiAFKEnabled = false,
+    AntiAFKConnection = nil,
 
     ConfigManager = nil,
     Config = nil,
@@ -200,6 +205,36 @@ local function getExecutorName()
 end
 
 -- ============================================================
+-- ANTI-AFK
+-- ============================================================
+
+local function setAntiAFK(enabled)
+    State.AntiAFKEnabled = enabled == true
+
+    if State.AntiAFKConnection then
+        pcall(function()
+            State.AntiAFKConnection:Disconnect()
+        end)
+        State.AntiAFKConnection = nil
+    end
+
+    if not State.AntiAFKEnabled or not LocalPlayer then
+        return
+    end
+
+    State.AntiAFKConnection = LocalPlayer.Idled:Connect(function()
+        if not State.AntiAFKEnabled then
+            return
+        end
+
+        pcall(function()
+            VirtualUser:CaptureController()
+            VirtualUser:ClickButton2(Vector2.new())
+        end)
+    end)
+end
+
+-- ============================================================
 -- CUSTOM THEME
 -- ============================================================
 
@@ -224,6 +259,62 @@ safeCall(function()
 end)
 
 -- ============================================================
+-- THEME / OPEN BUTTON HELPERS
+-- ============================================================
+
+local function asColor3(value, fallback)
+    if typeof(value) == "Color3" then
+        return value
+    end
+
+    if type(value) == "string" then
+        local ok, color = pcall(function()
+            return Color3.fromHex(value)
+        end)
+
+        if ok and color then
+            return color
+        end
+    end
+
+    return fallback
+end
+
+local function getThemeButtonColors(themeName)
+    local fallbackA = Color3.fromHex("#DC143C")
+    local fallbackB = Color3.fromHex("#FF4D6D")
+
+    local ok, themes = pcall(function()
+        return WindUI:GetThemes()
+    end)
+
+    if not ok or type(themes) ~= "table" then
+        return fallbackA, fallbackB
+    end
+
+    local theme = themes[themeName]
+    if type(theme) ~= "table" then
+        return fallbackA, fallbackB
+    end
+
+    local accent = asColor3(theme.Accent, fallbackA)
+    local button = asColor3(theme.Button, accent)
+
+    return accent, button
+end
+
+local function updateOpenButtonTheme(Window, themeName)
+    local accent, button = getThemeButtonColors(themeName)
+
+    safeCall(function()
+        Window:EditOpenButton({
+            CornerRadius = UDim.new(0, 14),
+            Color = ColorSequence.new(accent, button),
+        })
+    end)
+end
+
+-- ============================================================
 -- CREATE WINDOW
 -- ============================================================
 
@@ -246,7 +337,7 @@ function Core.Init(mapName)
 
         -- RVX HUB cover/logo shown at the top-left of the window.
         Icon = "rbxassetid://95844711546407",
-        IconSize = 28,
+        IconSize = 38,
 
         Author = State.MapName,
 
@@ -256,9 +347,9 @@ function Core.Init(mapName)
 
         Transparent = true,
 
-        -- ปก/ภาพพื้นหลังของสคริปต์
-        Background = "rbxassetid://95844711546407",
-        BackgroundImageTransparency = DEFAULTS.BackgroundImageTransparency,
+        -- ปิดภาพพื้นหลังใหญ่ของ RVX Hub
+        Background = "",
+        BackgroundImageTransparency = 1,
 
         Theme = DEFAULTS.Theme,
 
@@ -269,7 +360,7 @@ function Core.Init(mapName)
         OpenButton = {
             Title = "เปิด RVX Hub",
 
-            CornerRadius = UDim.new(1, 0),
+            CornerRadius = UDim.new(0, 14),
 
             StrokeThickness = 2,
 
@@ -282,8 +373,8 @@ function Core.Init(mapName)
             Scale = DEFAULTS.OpenButtonScale,
 
             Color = ColorSequence.new(
-                Color3.fromHex(RVX.Purple),
-                Color3.fromHex(RVX.Pink)
+                Color3.fromHex("#DC143C"),
+                Color3.fromHex("#FF4D6D")
             ),
         },
 
@@ -309,6 +400,8 @@ function Core.Init(mapName)
         WindUI:SetTheme(DEFAULTS.Theme)
     end)
 
+    updateOpenButtonTheme(Window, DEFAULTS.Theme)
+
     safeCall(function()
         Window:SetBackgroundTransparency(DEFAULTS.Transparency)
     end)
@@ -317,9 +410,9 @@ function Core.Init(mapName)
         Window:SetBackgroundImageTransparency(DEFAULTS.BackgroundImageTransparency)
     end)
 
-    safeCall(function()
-        Window:SetPanelBackground(DEFAULTS.PanelBackgroundEnabled == true)
-    end)
+    -- Panel background is controlled by the selected WindUI theme.
+    -- Do not pass a boolean to SetPanelBackground; some WindUI builds
+    -- expect a Color3 and will throw a TextColor3 type warning.
 
     safeCall(function()
         Window:SetToggleKey(Enum.KeyCode[DEFAULTS.ToggleKey])
@@ -362,6 +455,39 @@ function Core.Init(mapName)
             Radius = 8,
             Color = Color3.fromHex(RVX.Magenta),
         })
+    end)
+
+    -- Discord shortcut: click the topbar Discord button to copy the invite link.
+    safeCall(function()
+        Window:CreateTopbarButton("rvx-discord", "message-circle", function()
+            local copied = pcall(function()
+                if setclipboard then
+                    setclipboard("https://discord.gg/WQePykh3yJ")
+                elseif toclipboard then
+                    toclipboard("https://discord.gg/WQePykh3yJ")
+                elseif set_clipboard then
+                    set_clipboard("https://discord.gg/WQePykh3yJ")
+                else
+                    error("Clipboard API unavailable")
+                end
+            end)
+
+            if copied then
+                safeNotify(
+                    "Discord",
+                    "คัดลอกลิงก์ Discord แล้ว",
+                    2,
+                    "copy"
+                )
+            else
+                safeNotify(
+                    "Discord",
+                    "ไม่สามารถคัดลอกลิงก์ได้ใน Executor นี้",
+                    3,
+                    "circle-alert"
+                )
+            end
+        end, 995)
     end)
 
     -- ========================================================
@@ -551,6 +677,8 @@ function Core.Init(mapName)
                 WindUI:SetTheme(theme)
             end)
 
+            updateOpenButtonTheme(Window, theme)
+
             safeNotify(
                 "Theme Changed",
                 "ใช้ธีม: " .. theme,
@@ -592,13 +720,25 @@ function Core.Init(mapName)
 
     AppearanceTab:Toggle({
         Title = "พื้นหลัง Panel",
-        Desc = "แสดงพื้นหลังของ Panel",
-        Value = DEFAULTS.PanelBackground,
+        Desc = "เปิด / ปิดพื้นหลังของ Panel",
+        Value = DEFAULTS.PanelBackgroundEnabled,
         Flag = "RVX_PANEL_BACKGROUND",
 
         Callback = function(state)
+            -- Some WindUI releases expose SetPanelBackground as a Color3 API.
+            -- Use the theme's PanelBackground color instead of passing a boolean.
+            local themes = WindUI:GetThemes()
+            local theme = themes[DEFAULTS.Theme]
+            local panelColor = theme and theme.PanelBackground
+
+            if typeof(panelColor) ~= "Color3" then
+                panelColor = DEFAULTS.PanelBackground
+            end
+
             safeCall(function()
-                Window:SetPanelBackground(state)
+                Window:SetPanelBackground(
+                    state and panelColor or Color3.fromRGB(10, 6, 15)
+                )
             end)
         end,
     })
@@ -853,6 +993,24 @@ function Core.Init(mapName)
                 state and "เปิด Low Performance Mode" or "ปิด Low Performance Mode",
                 2,
                 "cpu"
+            )
+        end,
+    })
+
+    PerformanceTab:Toggle({
+        Title = "Anti-AFK",
+        Desc = "ป้องกัน Roblox ตัดการเชื่อมต่อเมื่อไม่ได้ใช้งานนาน",
+        Value = false,
+        Flag = "RVX_ANTI_AFK",
+
+        Callback = function(state)
+            setAntiAFK(state)
+
+            safeNotify(
+                "Anti-AFK",
+                state and "เปิด Anti-AFK แล้ว" or "ปิด Anti-AFK แล้ว",
+                2,
+                state and "shield-check" or "shield-off"
             )
         end,
     })
@@ -1195,9 +1353,7 @@ function Core.Init(mapName)
                 Window:SetBackgroundImageTransparency(DEFAULTS.BackgroundImageTransparency)
             end)
 
-            safeCall(function()
-                Window:SetPanelBackground(DEFAULTS.PanelBackgroundEnabled == true)
-            end)
+            updateOpenButtonTheme(Window, DEFAULTS.Theme)
 
             safeCall(function()
                 Window:SetToggleKey(Enum.KeyCode.RightShift)
@@ -1218,6 +1374,8 @@ function Core.Init(mapName)
                 ToggleKeyElement:Set(DEFAULTS.ToggleKey)
             end)
 
+            setAntiAFK(false)
+
             safeNotify(
                 "RVX Hub",
                 "คืนค่าการตั้งค่า UI แล้ว",
@@ -1226,23 +1384,6 @@ function Core.Init(mapName)
             )
         end,
     })
-
-    -- ========================================================
-    -- PROFILE REFRESH
-    -- ========================================================
-
-    -- WindUI handles the actual LocalPlayer profile when
-    -- Anonymous=false. This refresh is intentionally delayed
-    -- slightly so the Roblox client has time to finish loading.
-    task.spawn(function()
-        task.wait(1)
-
-        safeCall(function()
-            if Window.User and Window.User.SetAnonymous then
-                Window.User:SetAnonymous(false)
-            end
-        end)
-    end)
 
     -- ========================================================
     -- AUTOSAVE ON CLOSE
