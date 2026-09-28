@@ -956,6 +956,7 @@ function RideAPet.Init(Window, WindUI)
         ArriveDelay = 0.05,
         SettleDelay = 0.1,
         BaseDelay = 0.1,
+        FlySpeed = 300,
     }
 
     -- บินแบบ Tween ด้วยความเร็วคงที่ (ระยะทาง / ความเร็ว) ไม่ตัดเวลาสูงสุด
@@ -1424,6 +1425,48 @@ function RideAPet.Init(Window, WindUI)
                 end
             end
             task.wait(0.5)
+        end
+    end)
+
+
+    -- ===== DEBUG (passive): จับสาเหตุที่ไข่ถูกยึดตอนเดินเก็บเอง =====
+    -- แค่ "ฟัง" เหตุการณ์และ warn ลง console (F9) ไม่ยุ่งกับการเก็บไข่ของเกม
+    task.spawn(function()
+        local function join(...)
+            local t = {}
+            for i = 1, select("#", ...) do t[i] = tostring((select(i, ...))) end
+            return table.concat(t, ", ")
+        end
+        local function log(...)
+            warn("[RideAPet][DEBUG] " .. join(...) .. string.format(" | farm=%s place=%s", tostring(AutoFarmEnabled), tostring(AutoPlaceEnabled)))
+        end
+
+        local function watchBasket(b)
+            b.ChildAdded:Connect(function(c) log("Basket +", c.Name) end)
+            b.ChildRemoved:Connect(function(c) log("Basket -", c.Name) end)
+        end
+        local b = LocalPlayer:FindFirstChild("Basket")
+        if b then watchBasket(b) end
+        LocalPlayer.ChildAdded:Connect(function(c)
+            if c.Name == "Basket" then log("Basket created") watchBasket(c) end
+        end)
+
+        local function watchTools(container)
+            if not container then return end
+            container.ChildAdded:Connect(function(c) if c:IsA("Tool") then log("Tool +", c.Name, container.Name) end end)
+            container.ChildRemoved:Connect(function(c) if c:IsA("Tool") then log("Tool -", c.Name, container.Name) end end)
+        end
+        watchTools(LocalPlayer:FindFirstChildOfClass("Backpack"))
+        watchTools(LocalPlayer.Character)
+        LocalPlayer.CharacterAdded:Connect(function(ch) log("CharacterAdded") watchTools(ch) end)
+
+        -- ข้อความ/ข้อมูลที่เซิร์ฟเวอร์ส่งมาให้ client (มักบอกเหตุผลที่ยึด)
+        if Remotes then
+            for _, r in ipairs(Remotes:GetDescendants()) do
+                if r:IsA("RemoteEvent") then
+                    r.OnClientEvent:Connect(function(...) log("S->C", r.Name, join(...)) end)
+                end
+            end
         end
     end)
 
