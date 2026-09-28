@@ -1464,7 +1464,7 @@ function RideAPet.Init(Window, WindUI)
         if Remotes then
             for _, r in ipairs(Remotes:GetDescendants()) do
                 if r:IsA("RemoteEvent") then
-                    r.OnClientEvent:Connect(function(...) log("S->C", r.Name, join(...)) end)
+                    if r.Name ~= "PetCollect" then r.OnClientEvent:Connect(function(...) log("S->C", r.Name, join(...)) end) end
                 end
             end
         end
