@@ -1,21 +1,33 @@
--- RideAPet SAFE TEST
--- Diagnostic build: intentionally does NOT interact with egg pickup, remotes,
--- ProximityPrompts, teleportation, noclip, Basket, or Auto Farm/Auto Place.
+-- RVX Hub - Ride A Pet SAFE TEST module
+-- Passive module: does not touch egg pickup, remotes, teleport, noclip, basket, or prompts.
+local RideAPet = {}
 
-local Players = game:GetService("Players")
-local LocalPlayer = Players.LocalPlayer
+function RideAPet.Init(Window, WindUI)
+    print("[RideAPet SAFE TEST] Loaded — passive module")
+    print("[RideAPet SAFE TEST] Auto Farm: OFF | Auto Place: OFF | Teleport: OFF | Remote: OFF | Prompt: OFF")
 
-warn("[RideAPet SAFE TEST] Loaded — no egg pickup systems are running")
-warn("[RideAPet SAFE TEST] Auto Farm: OFF | Auto Place: OFF | Teleport: OFF | Remote: OFF")
+    local GameSection = Window.RVXGameSection or Window
+    local Tab = GameSection:Tab({ Title = "Ride A Pet Test", Icon = "shield-check" })
+    local Section = Tab:Section({ Title = "Safe Test" })
+    Section:Paragraph({
+        Title = "สถานะ",
+        Desc = "โหมดทดสอบแบบ Passive — ไม่มีระบบเก็บไข่หรือวาปทำงาน",
+    })
 
--- Keep this script passive so manually collecting an egg is exactly the same
--- as collecting it without the script running.
-return {
-    Name = "RideAPet SAFE TEST",
-    AutoFarm = false,
-    AutoPlace = false,
-    Teleport = false,
-    EggPickupRemote = false,
-    ProximityPromptHooks = false,
-    NoClip = false,
-}
+    Section:Button({
+        Title = "ตรวจสถานะ",
+        Desc = "แสดงว่าโมดูลนี้ไม่ได้เรียกระบบเก็บไข่",
+        Callback = function()
+            print("[RideAPet SAFE TEST] Pickup Remote: OFF | ProximityPrompt: OFF | Teleport: OFF")
+            if WindUI and WindUI.Notify then
+                WindUI:Notify({
+                    Title = "Ride A Pet SAFE TEST",
+                    Content = "Passive mode: ไม่มี Pickup/Prompt/Teleport",
+                    Duration = 3,
+                })
+            end
+        end,
+    })
+end
+
+return RideAPet
