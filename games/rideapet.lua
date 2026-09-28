@@ -892,14 +892,15 @@ function RideAPet.Init(Window, WindUI)
         return flat <= 38
     end
 
-    -- ระบบเดินทาง: ใช้ Teleport โดยตรง ไม่ใช้ระบบบิน/Tween
+    -- วาปแบบปกติ: ย้ายทั้ง Character ด้วย PivotTo โดยตรง ไม่บิน/Tween/Pathfinding
     local function teleportTo(pos)
-        local _, hrp = getChar()
-        if not hrp or not pos then return false end
+        if not pos then return false end
+        local char, hrp = getChar()
+        if not char or not hrp then return false end
 
         local target = CFrame.new(pos) * hrp.CFrame.Rotation
         local ok = pcall(function()
-            hrp.CFrame = target
+            char:PivotTo(target)
             hrp.AssemblyLinearVelocity = Vector3.zero
             hrp.AssemblyAngularVelocity = Vector3.zero
         end)
