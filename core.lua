@@ -396,9 +396,9 @@ function Core.Init(mapName)
     -- INITIAL WINDOW STATE
     -- --------------------------------------------------------
 
-    safeCall(function()
-        WindUI:SetTheme(DEFAULTS.Theme)
-    end)
+    -- Theme is already applied by CreateWindow({ Theme = DEFAULTS.Theme }).
+    -- Do not call SetTheme() a second time here; newer WindUI builds can
+    -- re-apply theme properties during startup and emit a TextColor3 type warning.
 
     updateOpenButtonTheme(Window, DEFAULTS.Theme)
 
@@ -735,10 +735,8 @@ function Core.Init(mapName)
                 panelColor = DEFAULTS.PanelBackground
             end
 
-            -- WindUI 1.6.63+ expects a numeric panel-background value here.
-            -- Keep the same visual behavior without passing a Color3 into the API.
             safeCall(function()
-                Window:SetPanelBackground(state and 0 or 1)
+                Window:SetPanelBackground(state)
             end)
         end,
     })
