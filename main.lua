@@ -4,7 +4,7 @@
 ]]
 
 local Core = loadstring(game:HttpGet(
-    "https://raw.githubusercontent.com/abideen5557-rgb/RVX-hub/main/core.lua"
+    "https://raw.githubusercontent.com/xxxx01w/RVX-hub/main/core.lua"
 ))()
 
 local ok, info = pcall(function()
