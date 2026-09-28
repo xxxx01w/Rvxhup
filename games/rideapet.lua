@@ -1,6 +1,9 @@
 --[[
-    RVX Hub - Ride A Pet (Auto Egg Farm) (fixed)
+    RVX Hub - Ride A Pet (Auto Egg Farm) v3
     Module pattern: return table with Init(Window, WindUI)
+
+    รายชื่อไข่ดึงสดจาก ReplicatedStorage.GameData.Eggs (ข้อมูลจริงของเกม)
+    ไข่ที่เกมเพิ่มใหม่จะขึ้นเองโดยไม่ต้องแก้โค้ด
 --]]
 
 local RideAPet = {}
@@ -20,6 +23,13 @@ function RideAPet.Init(Window, WindUI)
 
     -- ===== ระบบจดจำการตั้งค่า (Auto Save Config) =====
     local CONFIG_FILE = "RVXHub_RideAPetConfig.json"
+    local ALL_LABEL = "All / ทั้งหมด"
+
+    local function isAllSelection(value)
+        if type(value) ~= "string" then return false end
+        local s = value:lower():gsub("^%s+", "")
+        return s:match("^all%s*/") ~= nil or s == "all" or value:find("ทั้งหมด", 1, true) ~= nil
+    end
 
     local function LoadSavedConfig()
         local defaults = {
@@ -49,117 +59,244 @@ function RideAPet.Init(Window, WindUI)
     local GameRemotes = Remotes and Remotes:WaitForChild("Game", 10)
     local EggPickupRemote = GameRemotes and GameRemotes:WaitForChild("EggPickup", 10)
 
-    -- ตารางข้อมูลไข่
-    -- หมายเหตุ: Tidal Egg และ Bloom Egg ค่า priority/rarity เป็นค่าประมาณ ปรับให้ตรงกับเกมจริงได้
-    local EGG_DATA = {
-        ["Volcanic Egg"]   = { priority = 2500000000000, rarity = "Ethereal" },
-        ["Cherub Egg"]     = { priority = 1000000000000, rarity = "Ethereal" },
-        ["Asteroid Egg"]   = { priority = 500000000000,  rarity = "Ethereal" },
-        ["Solaris Egg"]    = { priority = 300000000000,  rarity = "Ethereal" },
-        ["Blackhole Egg"]  = { priority = 100000000000,  rarity = "Ethereal" },
-        ["Galaxy Egg"]     = { priority = 1500000000,    rarity = "Divine" },
-        ["Aurora Egg"]     = { priority = 300000000,     rarity = "Divine" },
-        ["Soul Egg"]       = { priority = 7000000,       rarity = "Mythic" },
-        ["Sinister Egg"]   = { priority = 3000000,       rarity = "Mythic" },
-        ["Flaming Egg"]    = { priority = 1000000,       rarity = "Mythic" },
-        ["Dominus Egg"]    = { priority = 700000,        rarity = "Mythic" },
-        ["Skull Egg"]      = { priority = 250000,        rarity = "Mythic" },
-        ["Crystal Egg"]    = { priority = 150000,        rarity = "Mythic" },
-        ["Diamond Egg"]    = { priority = 80000,         rarity = "Legendary" },
-        ["Tidal Egg"]      = { priority = 50000,         rarity = "Legendary" },
-        ["Golden Egg"]     = { priority = 30000,         rarity = "Legendary" },
-        ["Glass Egg"]      = { priority = 10000,         rarity = "Legendary" },
-        ["Ice Egg"]        = { priority = 3000,          rarity = "Epic" },
-        ["Slime Egg"]      = { priority = 1000,          rarity = "Epic" },
-        ["Flower Egg"]     = { priority = 750,           rarity = "Epic" },
-        ["Bloom Egg"]      = { priority = 600,           rarity = "Epic" },
-        ["Mushroom Egg"]   = { priority = 500,           rarity = "Epic" },
-        ["Leaf Egg"]       = { priority = 200,           rarity = "Rare" },
-        ["Stone Egg"]      = { priority = 100,           rarity = "Rare" },
-        ["Easter Egg"]     = { priority = 50,            rarity = "Rare" },
-        ["Cracked Egg"]    = { priority = 30,            rarity = "Rare" },
-        ["Brown Egg"]      = { priority = 5,             rarity = "Common" },
-        ["White Egg"]      = { priority = 1,             rarity = "Common" },
+    -- ============================================================
+    -- ข้อมูลไข่
+    -- ============================================================
+
+    -- ชื่อไข่ -> คีย์กลาง: ตัดวงเล็บ [..] (..), เว้นวรรค, คำว่า Egg แล้วเป็นตัวพิมพ์เล็ก
+    -- "Cherub Egg", "Cherub", "Cherub Egg [50 KG]" และ "[Ethereal] Cherub Egg" จึงเป็นคีย์เดียวกัน
+    local function normalizeEggName(name)
+        local s = tostring(name or "")
+        s = s:gsub("%s*%b[]", "")
+        s = s:gsub("%s*%b()", "")
+        s = s:lower()
+        s = s:gsub("%s+", "")
+        s = s:gsub("egg", "")
+        return s
+    end
+
+    local RARITY_RANK = {
+        Common = 1, Uncommon = 2, Rare = 3, Epic = 4,
+        Legendary = 5, Mythic = 6, Divine = 7, Ethereal = 8,
     }
 
-    local function normalizeEggName(name)
-        return (tostring(name):gsub("%s+", ""):lower())
+    -- ข้อมูลจริงจากเกม (Rarity / Luck / Image)
+    local GameEggsData = {}
+    pcall(function()
+        local gameData = ReplicatedStorage:WaitForChild("GameData", 5)
+        local module = gameData and gameData:WaitForChild("Eggs", 5)
+        if module then
+            local data = require(module)
+            if type(data) == "table" then GameEggsData = data end
+        end
+    end)
+
+    -- ข้อมูลสำรอง ใช้เฉพาะกรณีอ่านจากเกมไม่ได้
+    local FALLBACK_EGGS = {
+        ["Volcanic Egg"] = { luck = 2500000000000, rarity = "Ethereal" },
+        ["Cherub Egg"]   = { luck = 1000000000000, rarity = "Ethereal" },
+        ["Asteroid Egg"] = { luck = 500000000000,  rarity = "Ethereal" },
+        ["Solaris Egg"]  = { luck = 300000000000,  rarity = "Ethereal" },
+        ["Blackhole Egg"]= { luck = 100000000000,  rarity = "Ethereal" },
+        ["Galaxy Egg"]   = { luck = 1500000000,    rarity = "Divine" },
+        ["Aurora Egg"]   = { luck = 300000000,     rarity = "Divine" },
+        ["Soul Egg"]     = { luck = 7000000,       rarity = "Mythic" },
+        ["Sinister Egg"] = { luck = 3000000,       rarity = "Mythic" },
+        ["Flaming Egg"]  = { luck = 1000000,       rarity = "Mythic" },
+        ["Dominus Egg"]  = { luck = 700000,        rarity = "Mythic" },
+        ["Skull Egg"]    = { luck = 250000,        rarity = "Mythic" },
+        ["Crystal Egg"]  = { luck = 150000,        rarity = "Mythic" },
+        ["Diamond Egg"]  = { luck = 80000,         rarity = "Legendary" },
+        ["Tidal Egg"]    = { luck = 50000,         rarity = "Legendary" },
+        ["Golden Egg"]   = { luck = 30000,         rarity = "Legendary" },
+        ["Glass Egg"]    = { luck = 10000,         rarity = "Legendary" },
+        ["Ice Egg"]      = { luck = 3000,          rarity = "Epic" },
+        ["Slime Egg"]    = { luck = 1000,          rarity = "Epic" },
+        ["Flower Egg"]   = { luck = 750,           rarity = "Epic" },
+        ["Bloom Egg"]    = { luck = 600,           rarity = "Epic" },
+        ["Mushroom Egg"] = { luck = 500,           rarity = "Epic" },
+        ["Leaf Egg"]     = { luck = 200,           rarity = "Rare" },
+        ["Stone Egg"]    = { luck = 100,           rarity = "Rare" },
+        ["Easter Egg"]   = { luck = 50,            rarity = "Rare" },
+        ["Cracked Egg"]  = { luck = 30,            rarity = "Rare" },
+        ["Brown Egg"]    = { luck = 5,             rarity = "Common" },
+        ["White Egg"]    = { luck = 1,             rarity = "Common" },
+    }
+
+    local function getEggImage(data)
+        if type(data) ~= "table" then return nil end
+        for _, key in ipairs({ "Image", "ImageId", "Icon", "IconId", "Thumbnail", "ThumbnailId", "Texture", "TextureId" }) do
+            local v = data[key]
+            if v ~= nil then
+                local t = tostring(v)
+                if t ~= "" then
+                    if t:find("rbxassetid://", 1, true) == 1 or t:find("rbxthumb://", 1, true) == 1 then
+                        return t
+                    end
+                    local id = t:match("(%d+)")
+                    if id then return "rbxassetid://" .. id end
+                end
+            end
+        end
+        return nil
     end
 
-    local NORMALIZED_EGG_DATA = {}
-    for eggName, info in pairs(EGG_DATA) do
-        NORMALIZED_EGG_DATA[normalizeEggName(eggName)] = info
+    local function makeInfo(rarity, luck, image)
+        local rank = RARITY_RANK[rarity] or 0
+        return {
+            rarity = rarity or "Unknown",
+            priority = rank * 1e13 + (tonumber(luck) or 1),
+            image = image,
+        }
     end
+
+    local EGG_INFO = {}       -- normalizedName -> info
+    local EGG_RAW_NAME = {}   -- normalizedName -> ชื่อจริงในเกม
+
+    local function buildEggInfo()
+        EGG_INFO, EGG_RAW_NAME = {}, {}
+
+        local hasGameData = next(GameEggsData) ~= nil
+
+        if hasGameData then
+            for key, data in pairs(GameEggsData) do
+                if type(data) == "table" then
+                    local n = normalizeEggName(key)
+                    if n ~= "" then
+                        local rarity = type(data.Rarity) == "string" and data.Rarity or "Common"
+                        EGG_INFO[n] = makeInfo(rarity, data.Luck or data.luck, getEggImage(data))
+                        EGG_RAW_NAME[n] = tostring(key)
+                    end
+                end
+            end
+        else
+            for name, d in pairs(FALLBACK_EGGS) do
+                local n = normalizeEggName(name)
+                EGG_INFO[n] = makeInfo(d.rarity, d.luck, nil)
+                EGG_RAW_NAME[n] = name
+            end
+        end
+    end
+
+    buildEggInfo()
 
     local WarnedUnknownEggs = {}
     local function lookupEggInfo(eggName)
-        local info = NORMALIZED_EGG_DATA[normalizeEggName(eggName)]
-        if not info and tostring(eggName):lower():find("egg", 1, true) and not WarnedUnknownEggs[eggName] then
-            WarnedUnknownEggs[eggName] = true
-            warn("[RideAPet] พบชื่อไข่ที่ไม่มีในตาราง EGG_DATA: \"" .. tostring(eggName) .. "\"")
+        local n = normalizeEggName(eggName)
+        local info = EGG_INFO[n]
+        if not info and tostring(eggName):lower():find("egg", 1, true) and not WarnedUnknownEggs[n] then
+            WarnedUnknownEggs[n] = true
+            warn("[RideAPet] พบไข่ที่ไม่มีข้อมูล: \"" .. tostring(eggName) .. "\"")
         end
         return info
     end
 
-    -- ===== สแกนรายชื่อไข่สดจากเกมอัตโนมัติ (เรียงตาม Priority) =====
-    local AvailableEggOptions = {}
-    local OptionToRawName = {}
+    -- ============================================================
+    -- รายชื่อไข่สำหรับ Dropdown (สแกนสด + เรียงจากหายากสุด)
+    -- ============================================================
+
+    local SortedEggs = {}       -- { label, rawName, priority, image }
+    local OptionToRawName = {}  -- label -> rawName
+
+    local function cleanEggTitle(rawName)
+        local s = tostring(rawName):gsub("%s*%b[]", ""):gsub("%s*%b()", "")
+        s = s:gsub("%s*[Ee]gg%s*$", "")
+        s = s:gsub("^%s+", ""):gsub("%s+$", "")
+        if s == "" then s = tostring(rawName) end
+        return s
+    end
 
     local function RefreshDynamicEggList()
-        AvailableEggOptions = {}
+        SortedEggs = {}
         OptionToRawName = {}
-        local foundNames = {}
+
+        local found = {} -- normalizedName -> rawName
+
+        for n, raw in pairs(EGG_RAW_NAME) do
+            found[n] = raw
+        end
+
+        local function addFromWorld(nameToCheck)
+            if type(nameToCheck) ~= "string" or nameToCheck == "" then return end
+            if nameToCheck:find("^[0-9]+$") then return end
+            local n = normalizeEggName(nameToCheck)
+            if n ~= "" and not found[n] then
+                found[n] = nameToCheck
+            end
+        end
 
         local renderedEggs = Workspace:FindFirstChild("RenderedEggs")
         if renderedEggs then
             for _, item in ipairs(renderedEggs:GetChildren()) do
-                if item:IsA("Model") and not foundNames[item.Name] then
-                    foundNames[item.Name] = true
+                if item:IsA("Model") then
+                    local attr = item:GetAttribute("Egg") or item:GetAttribute("EggType") or item:GetAttribute("Type")
+                    addFromWorld(type(attr) == "string" and attr or item.Name)
                 end
             end
         end
 
-        for rawName, _ in pairs(EGG_DATA) do
-            foundNames[rawName] = true
+        local serverData = ReplicatedStorage:FindFirstChild("ServerData")
+        local activeEggs = serverData and serverData:FindFirstChild("ActiveEggs")
+        if activeEggs then
+            for _, ae in ipairs(activeEggs:GetChildren()) do
+                local attr = ae:GetAttribute("Egg") or ae:GetAttribute("EggType")
+                addFromWorld(type(attr) == "string" and attr or ae.Name)
+            end
         end
 
-        local eggListTemp = {}
-        for rawName in pairs(foundNames) do
-            local info = lookupEggInfo(rawName)
-            local priority = info and info.priority or 0
+        for n, raw in pairs(found) do
+            local info = EGG_INFO[n] or lookupEggInfo(raw)
             local rarity = info and info.rarity or "Unknown"
-            local label = string.format("[%s] %s", rarity, rawName)
-
-            table.insert(eggListTemp, {
+            local label = string.format("%s [%s]", cleanEggTitle(raw), rarity)
+            table.insert(SortedEggs, {
                 label = label,
-                rawName = rawName,
-                priority = priority
+                rawName = raw,
+                priority = info and info.priority or 0,
+                image = info and info.image or nil,
             })
-            OptionToRawName[label] = rawName
+            OptionToRawName[label] = raw
         end
 
-        table.sort(eggListTemp, function(a, b)
+        table.sort(SortedEggs, function(a, b)
             if a.priority == b.priority then
-                return a.rawName < b.rawName
+                return a.label < b.label
             end
             return a.priority > b.priority
         end)
-
-        for _, egg in ipairs(eggListTemp) do
-            table.insert(AvailableEggOptions, egg.label)
-        end
     end
 
     RefreshDynamicEggList()
 
-    -- แปลงค่าที่ Dropdown คืนมา (array / map / string) เป็น set ของชื่อไข่ที่ normalize แล้ว
+    -- ค่าที่ส่งให้ Dropdown แบบมีไอคอน (Advanced Dropdown ของ WindUI)
+    local function getDropdownValues()
+        local values = { { Title = ALL_LABEL, Icon = "check-check" } }
+        for _, egg in ipairs(SortedEggs) do
+            table.insert(values, { Title = egg.label, Icon = egg.image or "egg" })
+        end
+        return values
+    end
+
+    -- ============================================================
+    -- Selection (set ของ normalizedName + ธง __ALL)
+    -- ============================================================
+
     local function parseSelection(selected)
         local result = {}
 
         local function add(value)
+            if type(value) == "table" then
+                local title = value.Title or value.Value or value.Name
+                if title then add(title) end
+                return
+            end
             if type(value) ~= "string" then return end
+            if isAllSelection(value) then
+                result.__ALL = true
+                return
+            end
             local rawName = OptionToRawName[value] or value
-            result[normalizeEggName(rawName)] = true
+            local n = normalizeEggName(rawName)
+            if n ~= "" then result[n] = true end
         end
 
         if type(selected) == "table" then
@@ -170,30 +307,59 @@ function RideAPet.Init(Window, WindUI)
                     add(item)
                 end
             end
-        elseif type(selected) == "string" then
+        else
             add(selected)
         end
 
         return result
     end
 
-    -- โหลดค่าไข่สำหรับ Auto Farm
-    local SelectedEggTypes = {}
-    for _, rawName in ipairs(SavedConfig.SelectedEggNames or {}) do
-        SelectedEggTypes[normalizeEggName(rawName)] = true
+    local function loadSelection(list)
+        local set = {}
+        for _, name in ipairs(list or {}) do
+            if isAllSelection(name) then
+                set.__ALL = true
+            else
+                local n = normalizeEggName(name)
+                if n ~= "" then set[n] = true end
+            end
+        end
+        return set
     end
 
-    -- โหลดค่าไข่สำหรับ ESP
-    local SelectedEspEggTypes = {}
-    for _, rawName in ipairs(SavedConfig.SelectedEspEggNames or {}) do
-        SelectedEspEggTypes[normalizeEggName(rawName)] = true
+    local function isSelected(set, eggName)
+        if set.__ALL then return true end
+        return set[normalizeEggName(eggName)] == true
     end
 
-    -- โหลดค่าไข่สำหรับ Auto Place
-    local SelectedPlaceEggTypes = {}
-    for _, rawName in ipairs(SavedConfig.SelectedPlaceEggNames or {}) do
-        SelectedPlaceEggTypes[normalizeEggName(rawName)] = true
+    local function collectSelected(set)
+        local list = {}
+        if set.__ALL then table.insert(list, ALL_LABEL) end
+        local seen = {}
+        for _, egg in ipairs(SortedEggs) do
+            local n = normalizeEggName(egg.rawName)
+            if set[n] and not seen[n] then
+                seen[n] = true
+                table.insert(list, egg.rawName)
+            end
+        end
+        return list
     end
+
+    local function buildInitialLabels(set)
+        local labels = {}
+        if set.__ALL then table.insert(labels, ALL_LABEL) end
+        for _, egg in ipairs(SortedEggs) do
+            if set[normalizeEggName(egg.rawName)] then
+                table.insert(labels, egg.label)
+            end
+        end
+        return labels
+    end
+
+    local SelectedEggTypes = loadSelection(SavedConfig.SelectedEggNames)
+    local SelectedEspEggTypes = loadSelection(SavedConfig.SelectedEspEggNames)
+    local SelectedPlaceEggTypes = loadSelection(SavedConfig.SelectedPlaceEggNames)
 
     local AutoFarmEnabled = false
     local AutoPlaceEnabled = false
@@ -216,20 +382,6 @@ function RideAPet.Init(Window, WindUI)
         if writefile then
             pcall(function() writefile(CONFIG_FILE, HttpService:JSONEncode(cfg)) end)
         end
-    end
-
-    -- วนจากรายชื่อที่สแกนได้จริง (OptionToRawName) ไม่ใช่แค่ EGG_DATA
-    -- ไข่ใหม่ที่ยังไม่อยู่ในตารางจะได้บันทึกค่าติดด้วย
-    local function collectSelected(set)
-        local list, seen = {}, {}
-        for _, rawName in pairs(OptionToRawName) do
-            if set[normalizeEggName(rawName)] and not seen[rawName] then
-                seen[rawName] = true
-                table.insert(list, rawName)
-            end
-        end
-        table.sort(list)
-        return list
     end
 
     local function PersistEggConfig()
@@ -316,12 +468,9 @@ function RideAPet.Init(Window, WindUI)
         return eggModel and eggModel:FindFirstChild("Pickup", true)
     end
 
-    local function isEggTypeSelected(eggName)
-        return SelectedEggTypes[normalizeEggName(eggName)] == true
-    end
-
-    local function isEspEggTypeSelected(eggName)
-        return SelectedEspEggTypes[normalizeEggName(eggName)] == true
+    local function eggModelName(item)
+        local attr = item:GetAttribute("Egg") or item:GetAttribute("EggType")
+        return type(attr) == "string" and attr ~= "" and attr or item.Name
     end
 
     local function getAvailableEggs()
@@ -333,17 +482,15 @@ function RideAPet.Init(Window, WindUI)
             if item:IsA("Model") then
                 local prompt = findPickupPrompt(item)
                 if prompt and prompt.Parent then
-                    local info = lookupEggInfo(item.Name)
-                    local priority = info and info.priority or 1
-                    local rarity = info and info.rarity or "Unknown"
-
-                    if isEggTypeSelected(item.Name) then
+                    local eggName = eggModelName(item)
+                    if isSelected(SelectedEggTypes, eggName) then
+                        local info = lookupEggInfo(eggName)
                         table.insert(eggList, {
                             model = item,
-                            name = item.Name,
+                            name = eggName,
                             prompt = prompt,
-                            priority = priority,
-                            rarity = rarity,
+                            priority = info and info.priority or 1,
+                            rarity = info and info.rarity or "Unknown",
                         })
                     end
                 end
@@ -361,8 +508,7 @@ function RideAPet.Init(Window, WindUI)
     local PlaceLastCapacityScan = 0
 
     local function isLikelyEggName(name)
-        local n = normalizeEggName(name)
-        return NORMALIZED_EGG_DATA[n] ~= nil or n:find("egg", 1, true) ~= nil
+        return tostring(name):lower():find("egg", 1, true) ~= nil or EGG_INFO[normalizeEggName(name)] ~= nil
     end
 
     local function getEggTools()
@@ -387,15 +533,11 @@ function RideAPet.Init(Window, WindUI)
         return tools
     end
 
-    local function isPlaceEggSelected(toolName)
-        return SelectedPlaceEggTypes[normalizeEggName(toolName)] == true
-    end
-
     local function shouldPlaceTool(tool)
         if not tool or not tool.Parent then return false end
-        if AutoPlaceBlockedEggs and AutoPlaceBlockedEggs[normalizeEggName(tool.Name)] then return false end
+        if AutoPlaceBlockedEggs[normalizeEggName(tool.Name)] then return false end
         if PlaceMode == "วางทั้งหมด" then return true end
-        return isPlaceEggSelected(tool.Name)
+        return isSelected(SelectedPlaceEggTypes, tool.Name)
     end
 
     local function getMyEggFolder()
@@ -571,7 +713,6 @@ function RideAPet.Init(Window, WindUI)
         if not pcall(function() hum:EquipTool(tool) end) then return false end
         task.wait(0.12)
 
-        -- เลื่อนเมาส์ซ้ำหลัง Equip เพราะบางเกมรีเซ็ต Mouse.Hit ตอนเปลี่ยน Tool
         if target then
             moveMouseToWorld(target)
             task.wait(0.05)
@@ -601,7 +742,6 @@ function RideAPet.Init(Window, WindUI)
         if AutoPlaceBusy or not AutoPlaceEnabled or not isNearHomeForPlace() then return end
         AutoPlaceBusy = true
 
-        -- ห่อด้วย pcall เพื่อให้ AutoPlaceBusy ถูกรีเซ็ตเสมอ แม้เกิด error กลางทาง
         local ok, err = pcall(function()
             local full, placed, max = gardenIsFull()
             if full then
@@ -697,7 +837,6 @@ function RideAPet.Init(Window, WindUI)
                 end
             end
 
-            -- remote เป็น fallback เท่านั้น
             if EggPickupRemote then
                 pcall(function() EggPickupRemote:FireServer(eggData.model) end)
             end
@@ -736,7 +875,7 @@ function RideAPet.Init(Window, WindUI)
 
     secFarm:Toggle({
         Title = "เก็บไข่อัตโนมัติ (Auto Steal)",
-        Desc = "บินไปเก็บไข่ที่ตรงเงื่อนไข แล้วบินกลับบ้านอัตโนมัติ",
+        Desc = "ไปเก็บไข่ที่ตรงเงื่อนไข แล้วกลับบ้านอัตโนมัติ",
         Value = false,
         Callback = function(state)
             AutoFarmEnabled = state
@@ -758,23 +897,13 @@ function RideAPet.Init(Window, WindUI)
         Callback = function(selected) CurrentMovementMode = selected end,
     })
 
-    local function buildInitialLabels(set)
-        local labels = {}
-        for label, rawName in pairs(OptionToRawName) do
-            if set[normalizeEggName(rawName)] then
-                table.insert(labels, label)
-            end
-        end
-        return labels
-    end
-
-    secFarm:Dropdown({
+    local FarmDropdown = secFarm:Dropdown({
         Title = "เลือกไข่ที่จะเก็บ",
-        Desc = "สแกนไข่สดจากเกมเรียบร้อย (เรียงจากระดับสูงสุดไปต่ำสุด)",
-        Values = AvailableEggOptions,
+        Desc = "ดึงจากข้อมูลเกมจริง เรียงจากหายากสุดไปน้อยสุด",
+        Values = getDropdownValues(),
         Value = buildInitialLabels(SelectedEggTypes),
         Multi = true,
-        Search = true,
+        SearchBarEnabled = true,
         AllowNone = true,
         Callback = function(selected)
             SelectedEggTypes = parseSelection(selected)
@@ -824,17 +953,16 @@ function RideAPet.Init(Window, WindUI)
         end,
     })
 
-    secPlace:Dropdown({
+    local PlaceDropdown = secPlace:Dropdown({
         Title = "เลือกไข่ที่จะวาง",
-        Desc = "เลือกหลายชนิดได้เหมือนเมนูเลือกไข่ที่จะเก็บ",
-        Values = AvailableEggOptions,
+        Desc = "เลือกหลายชนิดได้ หรือเลือก All เพื่อวางทุกชนิด",
+        Values = getDropdownValues(),
         Value = buildInitialLabels(SelectedPlaceEggTypes),
         Multi = true,
-        Search = true,
+        SearchBarEnabled = true,
         AllowNone = true,
         Callback = function(selected)
             SelectedPlaceEggTypes = parseSelection(selected)
-            -- เลือกไข่ใหม่แล้ว ให้ล้างรายการที่เคยถูกบล็อกไว้
             AutoPlaceBlockedEggs = {}
             PersistEggConfig()
         end,
@@ -946,11 +1074,9 @@ function RideAPet.Init(Window, WindUI)
             EspEnabled = state
             SavedConfig.EspEnabled = state
 
-            -- ถ้ายังไม่เคยเลือกชนิดไข่ ให้ ESP แสดงไข่ที่รู้จักทั้งหมดเมื่อเปิด
+            -- ถ้ายังไม่เคยเลือกชนิดไข่ ให้ ESP แสดงทุกชนิดเมื่อเปิด
             if EspEnabled and next(SelectedEspEggTypes) == nil then
-                for rawName in pairs(EGG_DATA) do
-                    SelectedEspEggTypes[normalizeEggName(rawName)] = true
-                end
+                SelectedEspEggTypes.__ALL = true
             end
 
             PersistEggConfig()
@@ -960,18 +1086,42 @@ function RideAPet.Init(Window, WindUI)
         end,
     })
 
-    secEsp:Dropdown({
+    local EspDropdown = secEsp:Dropdown({
         Title = "เลือกไข่ที่จะแสดง ESP",
-        Desc = "เลือกประเภทไข่ที่ต้องการโชว์ป้าย (หากไม่เลือกจะไม่โชว์ป้าย)",
-        Values = AvailableEggOptions,
+        Desc = "เลือกประเภทไข่ที่ต้องการโชว์ป้าย หรือเลือก All",
+        Values = getDropdownValues(),
         Value = buildInitialLabels(SelectedEspEggTypes),
         Multi = true,
-        Search = true,
+        SearchBarEnabled = true,
         AllowNone = true,
         Callback = function(selected)
             SelectedEspEggTypes = parseSelection(selected)
             clearAllEsp()
             PersistEggConfig()
+        end,
+    })
+
+    -- ===== ปุ่มรีเฟรชรายชื่อไข่ =====
+    secFarm:Button({
+        Title = "รีเฟรชรายชื่อไข่ (Refresh Eggs)",
+        Desc = "สแกนรายชื่อไข่จากเกมใหม่ แล้วอัปเดตทุกเมนู",
+        Callback = function()
+            RefreshDynamicEggList()
+            local values = getDropdownValues()
+            for _, dd in ipairs({ FarmDropdown, PlaceDropdown, EspDropdown }) do
+                pcall(function()
+                    if dd.Refresh then
+                        dd:Refresh(values)
+                    elseif dd.SetValues then
+                        dd:SetValues(values)
+                    end
+                end)
+            end
+            WindUI:Notify({
+                Title = "Ride A Pet",
+                Content = "พบไข่ " .. #SortedEggs .. " ชนิด",
+                Duration = 3,
+            })
         end,
     })
 
@@ -1004,9 +1154,10 @@ function RideAPet.Init(Window, WindUI)
                 if renderedEggs then
                     for _, eggModel in ipairs(renderedEggs:GetChildren()) do
                         if eggModel:IsA("Model") then
-                            if isEspEggTypeSelected(eggModel.Name) then
+                            local eggName = eggModelName(eggModel)
+                            if isSelected(SelectedEspEggTypes, eggName) then
                                 if not EspBillboards[eggModel] then
-                                    local info = lookupEggInfo(eggModel.Name)
+                                    local info = lookupEggInfo(eggName)
                                     pcall(function() createEspBillboard(eggModel, info) end)
                                 end
                             elseif EspBillboards[eggModel] then
@@ -1024,7 +1175,7 @@ function RideAPet.Init(Window, WindUI)
         end
     end)
 
-    print("[RideAPet] Loaded Successfully")
+    print("[RideAPet] Loaded Successfully — eggs: " .. #SortedEggs)
 end
 
 return RideAPet
