@@ -1015,7 +1015,8 @@ function RideAPet.Init(Window, WindUI)
 
         if not MyPlotCFrame then saveHomePosition() end
 
-        -- ฝากไข่ที่ค้างใน Basket ก่อนเริ่มรอบใหม่
+        -- ใช้ขั้นตอนเก็บแบบเดียวกับสคริปต์ต้นฉบับ:
+        -- ฝาก Basket ที่ค้างก่อน -> วาป -> กด Prompt -> ส่ง UUID -> รอการยืนยัน -> วาปกลับ -> ฝาก Basket
         local basket = LocalPlayer:FindFirstChild("Basket")
         if basket and #basket:GetChildren() > 0 then
             depositBasket()
@@ -1031,17 +1032,17 @@ function RideAPet.Init(Window, WindUI)
         local part = model:FindFirstChildWhichIsA("BasePart", true) or model.PrimaryPart
         local eggPos = part and part.Position or model:GetPivot().Position
         local targetPos = eggPos + Vector3.new(0, 1.8, 0)
-
         local uuid = getEggUuid(model)
 
         setNoClip(true)
-
         setStatus("กำลังวาปไปหา " .. eggData.name .. "...")
         teleportTo(targetPos)
 
-        -- รอให้เซิร์ฟเวอร์รับตำแหน่งใหม่ (เร็วเกินไป = ระยะเก็บไม่ผ่าน)
         task.wait(Settings.ArriveDelay)
-        pcall(function() hrp.AssemblyLinearVelocity = Vector3.zero end)
+        pcall(function()
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+        end)
 
         local basketNow = LocalPlayer:FindFirstChild("Basket")
         local prevBasketCount = basketNow and #basketNow:GetChildren() or 0
@@ -1049,14 +1050,26 @@ function RideAPet.Init(Window, WindUI)
         local signal = nil
         local function acquired()
             local b = LocalPlayer:FindFirstChild("Basket")
-            if b and #b:GetChildren() > prevBasketCount then signal = "basket" return true end
+            if b and #b:GetChildren() > prevBasketCount then
+                signal = "basket"
+                return true
+            end
+
             local c = LocalPlayer.Character
             if c then
                 for _, it in ipairs(c:GetChildren()) do
-                    if isEggTool(it) then signal = "tool" return true end
+                    if isEggTool(it) then
+                        signal = "tool"
+                        return true
+                    end
                 end
             end
-            if not model or not model.Parent then signal = "model-gone" return true end
+
+            -- ต้นฉบับถือว่า Model หายหลังจาก prompt/remote เป็นสัญญาณสำเร็จ
+            if not model or not model.Parent then
+                signal = "model-gone"
+                return true
+            end
             return false
         end
 
@@ -1064,54 +1077,48 @@ function RideAPet.Init(Window, WindUI)
         local pickupTime = 0
         local attempt = 0
 
-        -- ส่งคำสั่งเก็บแบบจำกัดครั้ง แล้วรอให้ Basket/Tool ยืนยันจริง
-        -- ไม่ใช้ Model หายเป็นหลักฐานสำเร็จ เพราะเซิร์ฟเวอร์อาจคืนไข่ทีหลัง
-        for try = 1, 2 do
-            attempt = try
+        -- ใช้ retry/hold logic จากสคริปต์ต้นฉบับ: สูงสุด 2.5 วินาที
+        local deadline = tick() + 2.5
+        while tick() < deadline and not pickupOk do
+            attempt = attempt + 1
+
             if prompt and prompt.Parent and prompt.Enabled then
-                triggerPrompt(prompt, 0.05)
-            end
-            if EggPickupRemote and uuid then
-                pcall(function() EggPickupRemote:FireServer(uuid) end)
+                if attempt == 1 then
+                    triggerPrompt(prompt, 0.05)
+                else
+                    -- ถ้าเกมกำหนด HoldDuration ให้จำลองการกดค้างตามเวลาจริง
+                    pcall(function()
+                        prompt:InputHoldBegin()
+                        task.wait((prompt.HoldDuration or 0) + 0.08)
+                        prompt:InputHoldEnd()
+                    end)
+                end
             end
 
-            local confirmUntil = tick() + 0.9
-            while tick() < confirmUntil do
-                local b = LocalPlayer:FindFirstChild("Basket")
-                if b and #b:GetChildren() > prevBasketCount then
-                    signal = "basket"
-                    pickupOk = true
-                    break
-                end
-                local c = LocalPlayer.Character
-                if c then
-                    for _, it in ipairs(c:GetChildren()) do
-                        if isEggTool(it) then
-                            signal = "tool"
-                            pickupOk = true
-                            break
-                        end
-                    end
-                end
-                if pickupOk then break end
-                task.wait(0.05)
+            if EggPickupRemote and uuid then
+                pcall(function()
+                    EggPickupRemote:FireServer(uuid)
+                end)
             end
-            if pickupOk then
+
+            task.wait(0.15)
+            if acquired() then
+                pickupOk = true
                 pickupTime = tick()
-                break
             end
-            task.wait(0.1)
         end
 
         local collected = false
         if pickupOk then
-            -- หน่วงให้เซิร์ฟเวอร์ยืนยันว่าไข่เป็นของเราแล้ว ก่อนวาปกลับ
+            -- คงค่าเวลาตายตัวตามที่ตั้งไว้
             task.wait(Settings.SettleDelay)
             setStatus("เก็บ " .. eggData.name .. " แล้ว กำลังวาปกลับบ้าน...")
 
             local basePos = getBasePos()
             if basePos then
-                pcall(function() LocalPlayer:RequestStreamAroundAsync(basePos) end)
+                pcall(function()
+                    LocalPlayer:RequestStreamAroundAsync(basePos)
+                end)
                 teleportTo(basePos)
                 task.wait(Settings.BaseDelay)
 
@@ -1125,30 +1132,33 @@ function RideAPet.Init(Window, WindUI)
             end
 
             depositBasket()
-
             pcall(function() hum:UnequipTools() end)
             task.wait(0.08)
 
             local b = LocalPlayer:FindFirstChild("Basket")
             local basketLeft = b and #b:GetChildren() or 0
             collected = basketLeft == 0
+
             if collected then
-                -- จำตำแหน่งไข่ที่เพิ่งเก็บ เพื่อไม่ให้รอบถัดไปวิ่งกลับไปหาไข่ที่เซิร์ฟเวอร์คืน/สร้างซ้ำทันที
                 rememberCollectedEgg(model, eggData.name)
             end
+
             warn(string.format(
-                "[RideAPet] %s | signal=%s uuid=%s hold=%s basketLeft=%d onPlot=%s carry=%.2fs",
+                "[RideAPet] %s | signal=%s uuid=%s hold=%s basketLeft=%d onPlot=%s attempts=%d carry=%.2fs",
                 eggData.name, tostring(signal), tostring(uuid ~= nil),
                 tostring(prompt and prompt.HoldDuration), basketLeft,
-                tostring(isOnMyPlot()),
-                tick() - pickupTime
+                tostring(isOnMyPlot()), attempt, tick() - pickupTime
             ))
-            setStatus(collected and ("เก็บ " .. eggData.name .. " เข้ากระเป๋าแล้ว") or "ไข่ยังค้างในตะกร้า — ลองฝากใหม่...")
+
+            setStatus(collected
+                and ("เก็บ " .. eggData.name .. " เข้ากระเป๋าแล้ว")
+                or "ไข่ยังค้างในตะกร้า — ลองฝากใหม่...")
         else
             warn(string.format(
                 "[RideAPet] เก็บ %s ไม่สำเร็จ | uuid=%s hold=%s enabled=%s attempts=%d",
                 eggData.name, tostring(uuid ~= nil),
-                tostring(prompt and prompt.HoldDuration), tostring(prompt and prompt.Enabled), attempt
+                tostring(prompt and prompt.HoldDuration),
+                tostring(prompt and prompt.Enabled), attempt
             ))
             setStatus("เกมยังไม่ยอมรับการเก็บ " .. eggData.name .. " — ลองใหม่...")
         end
