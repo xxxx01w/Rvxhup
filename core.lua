@@ -39,7 +39,7 @@ local LocalPlayer = Players.LocalPlayer
 -- ============================================================
 
 local WindUI = loadstring(game:HttpGet(
-    "https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"
+    "https://github.com/Footagesus/WindUI/releases/download/1.6.66/main.lua"
 ))()
 
 -- ============================================================
@@ -396,11 +396,9 @@ function Core.Init(mapName)
     -- INITIAL WINDOW STATE
     -- --------------------------------------------------------
 
-    -- Theme is already applied by CreateWindow({ Theme = DEFAULTS.Theme }).
-    -- Do not call SetTheme() a second time here; newer WindUI builds can
-    -- re-apply theme properties during startup and emit a TextColor3 type warning.
-
-    updateOpenButtonTheme(Window, DEFAULTS.Theme)
+    -- Theme and OpenButton are already applied by CreateWindow above.
+    -- Re-applying them here can trigger a WindUI TextColor3 type warning
+    -- on some WindUI builds, so leave the initial state untouched.
 
     safeCall(function()
         Window:SetBackgroundTransparency(DEFAULTS.Transparency)
@@ -418,11 +416,8 @@ function Core.Init(mapName)
         Window:SetToggleKey(Enum.KeyCode[DEFAULTS.ToggleKey])
     end)
 
-    safeCall(function()
-        Window:EditOpenButton({
-            Enabled = DEFAULTS.OpenButton,
-        })
-    end)
+    -- OpenButton Enabled/Scale/Color are already configured in CreateWindow.
+    -- Do not re-apply them during startup.
 
     -- --------------------------------------------------------
     -- BRAND TAGS
@@ -736,7 +731,9 @@ function Core.Init(mapName)
             end
 
             safeCall(function()
-                Window:SetPanelBackground(state)
+                Window:SetPanelBackground(
+                    state and panelColor or Color3.fromRGB(10, 6, 15)
+                )
             end)
         end,
     })
