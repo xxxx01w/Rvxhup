@@ -1,24 +1,9 @@
 --[[
-    RVX HUB - CORE V3
+    RVX HUB - CORE V3 (fixed)
     Centralized UI / Appearance / Controls / Config system
-
-    Main responsibilities:
-      • One WindUI instance for every RVX game module
-      • RVX Purple -> Pink visual identity
-      • Real LocalPlayer profile
-      • Home / Dashboard
-      • Appearance controls
-      • Keybind controls
-      • Notification controls
-      • Performance controls
-      • Config manager
-      • Module / game information
-      • Safe API wrappers so optional WindUI features do not hard-crash the hub
 
     Game modules should ONLY receive:
         local Window, WindUI = Core.Init(mapName)
-
-    Then create their own game-specific tabs on Window.
 ]]
 
 local Core = {}
@@ -39,7 +24,7 @@ local LocalPlayer = Players.LocalPlayer
 -- ============================================================
 
 local WindUI = loadstring(game:HttpGet(
-    "https://github.com/Footagesus/WindUI/releases/download/1.6.66/main.lua"
+    "https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"
 ))()
 
 -- ============================================================
@@ -76,6 +61,7 @@ local DEFAULTS = {
     Transparency = 0.08,
     BackgroundImageTransparency = 1,
     PanelBackground = Color3.fromRGB(18, 12, 24),
+    PanelBackgroundOff = Color3.fromRGB(10, 6, 15),
     PanelBackgroundEnabled = true,
 
     ToggleKey = "RightShift",
@@ -117,8 +103,12 @@ local State = {
 -- SAFE HELPERS
 -- ============================================================
 
+-- safeCall ใช้ xpcall เพื่อแสดง traceback ว่าพังที่บรรทัดไหน
 local function safeCall(callback, ...)
-    local ok, result = pcall(callback, ...)
+    local ok, result = xpcall(callback, function(err)
+        return tostring(err) .. "\n" .. debug.traceback()
+    end, ...)
+
     if ok then
         return true, result
     end
@@ -202,6 +192,22 @@ local function getExecutorName()
     end
 
     return "Unknown"
+end
+
+local function copyToClipboard(text)
+    local ok = pcall(function()
+        if setclipboard then
+            setclipboard(text)
+        elseif toclipboard then
+            toclipboard(text)
+        elseif set_clipboard then
+            set_clipboard(text)
+        else
+            error("Clipboard API unavailable")
+        end
+    end)
+
+    return ok
 end
 
 -- ============================================================
@@ -314,6 +320,26 @@ local function updateOpenButtonTheme(Window, themeName)
     end)
 end
 
+-- คืนค่าสี Panel เป็น Color3 เสมอ (ห้ามส่ง boolean ให้ SetPanelBackground)
+local function getPanelColor(enabled)
+    if not enabled then
+        return DEFAULTS.PanelBackgroundOff
+    end
+
+    local ok, themes = pcall(function()
+        return WindUI:GetThemes()
+    end)
+
+    if ok and type(themes) == "table" then
+        local theme = themes[DEFAULTS.Theme]
+        if type(theme) == "table" and typeof(theme.PanelBackground) == "Color3" then
+            return theme.PanelBackground
+        end
+    end
+
+    return DEFAULTS.PanelBackground
+end
+
 -- ============================================================
 -- CREATE WINDOW
 -- ============================================================
@@ -335,7 +361,6 @@ function Core.Init(mapName)
     local Window = WindUI:CreateWindow({
         Title = "RVX Hub",
 
-        -- RVX HUB cover/logo shown at the top-left of the window.
         Icon = "rbxassetid://95844711546407",
         IconSize = 38,
 
@@ -347,7 +372,6 @@ function Core.Init(mapName)
 
         Transparent = true,
 
-        -- ปิดภาพพื้นหลังใหญ่ของ RVX Hub
         Background = "",
         BackgroundImageTransparency = 1,
 
@@ -378,8 +402,6 @@ function Core.Init(mapName)
             ),
         },
 
-        -- WindUI uses the LocalPlayer for this profile.
-        -- Anonymous=false tells it to show the actual account.
         User = {
             Enabled = true,
             Anonymous = false,
@@ -396,9 +418,11 @@ function Core.Init(mapName)
     -- INITIAL WINDOW STATE
     -- --------------------------------------------------------
 
-    -- Theme and OpenButton are already applied by CreateWindow above.
-    -- Re-applying them here can trigger a WindUI TextColor3 type warning
-    -- on some WindUI builds, so leave the initial state untouched.
+    safeCall(function()
+        WindUI:SetTheme(DEFAULTS.Theme)
+    end)
+
+    updateOpenButtonTheme(Window, DEFAULTS.Theme)
 
     safeCall(function()
         Window:SetBackgroundTransparency(DEFAULTS.Transparency)
@@ -408,39 +432,27 @@ function Core.Init(mapName)
         Window:SetBackgroundImageTransparency(DEFAULTS.BackgroundImageTransparency)
     end)
 
-    -- Panel background is controlled by the selected WindUI theme.
-    -- Do not pass a boolean to SetPanelBackground; some WindUI builds
-    -- expect a Color3 and will throw a TextColor3 type warning.
-
     safeCall(function()
         Window:SetToggleKey(Enum.KeyCode[DEFAULTS.ToggleKey])
     end)
 
-    -- OpenButton Enabled/Scale/Color are already configured in CreateWindow.
-    -- Do not re-apply them during startup.
+    safeCall(function()
+        Window:EditOpenButton({
+            Enabled = DEFAULTS.OpenButton,
+        })
+    end)
 
     -- --------------------------------------------------------
     -- BRAND TAGS
     -- --------------------------------------------------------
 
+    -- ใช้สีเดียวแทน Gradient: บาง build ของ WindUI คำนวณสีตัวอักษรจาก Color
+    -- และรับได้เฉพาะ Color3 ทำให้เกิด "TextColor3 ... got boolean"
     safeCall(function()
         Window:Tag({
             Title = "RVX",
             Radius = 8,
-
-            Color = WindUI:Gradient({
-                ["0"] = {
-                    Color = Color3.fromHex(RVX.Purple),
-                    Transparency = 0,
-                },
-
-                ["100"] = {
-                    Color = Color3.fromHex(RVX.Pink),
-                    Transparency = 0,
-                },
-            }, {
-                Rotation = 45,
-            }),
+            Color = Color3.fromHex(RVX.Magenta),
         })
     end)
 
@@ -448,39 +460,19 @@ function Core.Init(mapName)
         Window:Tag({
             Title = VERSION,
             Radius = 8,
-            Color = Color3.fromHex(RVX.Magenta),
+            Color = Color3.fromHex(RVX.Purple),
         })
     end)
 
     -- Discord shortcut: click the topbar Discord button to copy the invite link.
     safeCall(function()
         Window:CreateTopbarButton("rvx-discord", "message-circle", function()
-            local copied = pcall(function()
-                if setclipboard then
-                    setclipboard("https://discord.gg/WQePykh3yJ")
-                elseif toclipboard then
-                    toclipboard("https://discord.gg/WQePykh3yJ")
-                elseif set_clipboard then
-                    set_clipboard("https://discord.gg/WQePykh3yJ")
-                else
-                    error("Clipboard API unavailable")
-                end
-            end)
+            local copied = copyToClipboard("https://discord.gg/WQePykh3yJ")
 
             if copied then
-                safeNotify(
-                    "Discord",
-                    "คัดลอกลิงก์ Discord แล้ว",
-                    2,
-                    "copy"
-                )
+                safeNotify("Discord", "คัดลอกลิงก์ Discord แล้ว", 2, "copy")
             else
-                safeNotify(
-                    "Discord",
-                    "ไม่สามารถคัดลอกลิงก์ได้ใน Executor นี้",
-                    3,
-                    "circle-alert"
-                )
+                safeNotify("Discord", "ไม่สามารถคัดลอกลิงก์ได้ใน Executor นี้", 3, "circle-alert")
             end
         end, 995)
     end)
@@ -494,11 +486,8 @@ function Core.Init(mapName)
         Opened = true,
     })
 
-    -- กลุ่มแมพ/ฟังก์ชันเกมจะอยู่ตรงกลางระหว่างหน้าหลักกับการตั้งค่า
-    -- Game modules สามารถใช้ Window.RVXGameSection เพื่อเพิ่มแท็บของตัวเองได้
+    -- Game modules ใช้ Window.RVXGameSection เพื่อเพิ่มแท็บของตัวเอง
     local GameSection = Window:Section({
-        -- ฟังก์ชันของแมพทั้งหมดจะรวมอยู่ตรงกลางของ Sidebar
-        -- Game modules ควรใช้ Window.RVXGameSection แทนการสร้าง Section ใหม่
         Title = "แมพ",
         Opened = true,
     })
@@ -513,7 +502,6 @@ function Core.Init(mapName)
         Opened = true,
     })
 
-    -- เปิดให้ Game Modules ใช้กลุ่มแมพเดียวกัน
     Window.RVXGameSection = GameSection
 
     -- ========================================================
@@ -531,9 +519,9 @@ function Core.Init(mapName)
         Desc =
             "Welcome back, " ..
             getPlayerDisplay() ..
-            "\\n" ..
+            "\n" ..
             getPlayerUsername() ..
-            "\\n\\n" ..
+            "\n\n" ..
             "แมพปัจจุบัน: " ..
             State.MapName,
 
@@ -567,7 +555,7 @@ function Core.Init(mapName)
         Title = "ผู้เล่น",
         Desc =
             getPlayerDisplay() ..
-            "\\n" ..
+            "\n" ..
             getPlayerUsername(),
         Image = "user-round",
         ImageSize = 20,
@@ -598,8 +586,8 @@ function Core.Init(mapName)
     HomeTab:Paragraph({
         Title = "สถานะ Core",
         Desc =
-            "● Core โหลดแล้ว\\n" ..
-            "● WindUI พร้อมใช้งาน\\n" ..
+            "● Core โหลดแล้ว\n" ..
+            "● WindUI พร้อมใช้งาน\n" ..
             "● โมดูลแมพ: " .. State.MapName,
 
         Image = "activity",
@@ -674,12 +662,7 @@ function Core.Init(mapName)
 
             updateOpenButtonTheme(Window, theme)
 
-            safeNotify(
-                "Theme Changed",
-                "ใช้ธีม: " .. theme,
-                2,
-                "palette"
-            )
+            safeNotify("Theme Changed", "ใช้ธีม: " .. theme, 2, "palette")
         end,
     })
 
@@ -720,20 +703,11 @@ function Core.Init(mapName)
         Flag = "RVX_PANEL_BACKGROUND",
 
         Callback = function(state)
-            -- Some WindUI releases expose SetPanelBackground as a Color3 API.
-            -- Use the theme's PanelBackground color instead of passing a boolean.
-            local themes = WindUI:GetThemes()
-            local theme = themes[DEFAULTS.Theme]
-            local panelColor = theme and theme.PanelBackground
-
-            if typeof(panelColor) ~= "Color3" then
-                panelColor = DEFAULTS.PanelBackground
-            end
+            -- ส่งเป็น Color3 เสมอ ไม่ส่ง boolean
+            local color = getPanelColor(state == true)
 
             safeCall(function()
-                Window:SetPanelBackground(
-                    state and panelColor or Color3.fromRGB(10, 6, 15)
-                )
+                Window:SetPanelBackground(color)
             end)
         end,
     })
@@ -745,8 +719,6 @@ function Core.Init(mapName)
         Flag = "RVX_COMPACT",
 
         Callback = function(state)
-            -- Kept as a preference flag for future centralized layout work.
-            -- Game modules do not need to know about this setting.
             safeNotify(
                 "Compact Mode",
                 state and "เปิดโหมดกระชับ" or "ปิดโหมดกระชับ",
@@ -793,12 +765,7 @@ function Core.Init(mapName)
                 Window:SetToggleKey(keyCode)
             end)
 
-            safeNotify(
-                "Shortcut Updated",
-                "ปุ่มเปิด/ปิด UI: " .. keyName,
-                2,
-                "keyboard"
-            )
+            safeNotify("Shortcut Updated", "ปุ่มเปิด/ปิด UI: " .. keyName, 2, "keyboard")
         end,
     })
 
@@ -859,12 +826,7 @@ function Core.Init(mapName)
                 ToggleKeyElement:Set("RightShift")
             end)
 
-            safeNotify(
-                "Shortcut Reset",
-                "กลับไปใช้ RightShift แล้ว",
-                2,
-                "keyboard"
-            )
+            safeNotify("Shortcut Reset", "กลับไปใช้ RightShift แล้ว", 2, "keyboard")
         end,
     })
 
@@ -888,12 +850,7 @@ function Core.Init(mapName)
             State.NotificationsEnabled = state
 
             if state then
-                safeNotify(
-                    "Notifications",
-                    "เปิดการแจ้งเตือนแล้ว",
-                    2,
-                    "bell"
-                )
+                safeNotify("Notifications", "เปิดการแจ้งเตือนแล้ว", 2, "bell")
             end
         end,
     })
@@ -944,7 +901,7 @@ function Core.Init(mapName)
     PerformanceTab:Paragraph({
         Title = "โหมดประสิทธิภาพ",
         Desc =
-            "การตั้งค่านี้ควบคุมเฉพาะ UI Core\\n" ..
+            "การตั้งค่านี้ควบคุมเฉพาะ UI Core\n" ..
             "ไม่แก้ระบบฟีเจอร์ของแต่ละเกม",
 
         Image = "gauge",
@@ -1019,9 +976,9 @@ function Core.Init(mapName)
             safeNotify(
                 "RVX Performance",
                 "Device: " .. getDeviceName() ..
-                "\\nExecutor: " .. getExecutorName() ..
-                "\\nReduced Animation: " .. tostring(State.ReducedAnimation) ..
-                "\\nLow Performance: " .. tostring(State.LowPerformanceMode),
+                "\nExecutor: " .. getExecutorName() ..
+                "\nReduced Animation: " .. tostring(State.ReducedAnimation) ..
+                "\nLow Performance: " .. tostring(State.LowPerformanceMode),
                 4,
                 "activity"
             )
@@ -1041,7 +998,7 @@ function Core.Init(mapName)
     ConfigTab:Paragraph({
         Title = "การตั้งค่า RVX",
         Desc =
-            "WindUI Config Manager จะเก็บค่าของ Elements ที่มี Flag\\n" ..
+            "WindUI Config Manager จะเก็บค่าของ Elements ที่มี Flag\n" ..
             "เช่น Theme, Transparency, Keybind และ Toggle",
 
         Image = "save",
@@ -1118,12 +1075,7 @@ function Core.Init(mapName)
                 end)
 
                 if not ok or not config then
-                    safeNotify(
-                        "Config Error",
-                        "ไม่สามารถสร้าง Config ได้",
-                        3,
-                        "circle-alert"
-                    )
+                    safeNotify("Config Error", "ไม่สามารถสร้าง Config ได้", 3, "circle-alert")
                     return
                 end
 
@@ -1134,23 +1086,13 @@ function Core.Init(mapName)
                 end)
 
                 if saved then
-                    safeNotify(
-                        "Config Saved",
-                        "บันทึก: " .. configName,
-                        3,
-                        "check"
-                    )
+                    safeNotify("Config Saved", "บันทึก: " .. configName, 3, "check")
 
                     safeCall(function()
                         ConfigDropdown:Refresh(ConfigManager:AllConfigs())
                     end)
                 else
-                    safeNotify(
-                        "Config Error",
-                        "บันทึก Config ไม่สำเร็จ",
-                        3,
-                        "circle-alert"
-                    )
+                    safeNotify("Config Error", "บันทึก Config ไม่สำเร็จ", 3, "circle-alert")
                 end
             end,
         })
@@ -1172,12 +1114,7 @@ function Core.Init(mapName)
                 end)
 
                 if not ok or not config then
-                    safeNotify(
-                        "Config Error",
-                        "ไม่สามารถเปิด Config ได้",
-                        3,
-                        "circle-alert"
-                    )
+                    safeNotify("Config Error", "ไม่สามารถเปิด Config ได้", 3, "circle-alert")
                     return
                 end
 
@@ -1189,20 +1126,9 @@ function Core.Init(mapName)
 
                 if loaded then
                     State.Config = config
-
-                    safeNotify(
-                        "Config Loaded",
-                        "โหลด: " .. configName,
-                        3,
-                        "refresh-cw"
-                    )
+                    safeNotify("Config Loaded", "โหลด: " .. configName, 3, "refresh-cw")
                 else
-                    safeNotify(
-                        "Config Error",
-                        "ไม่พบหรือโหลด Config ไม่สำเร็จ",
-                        3,
-                        "circle-alert"
-                    )
+                    safeNotify("Config Error", "ไม่พบหรือโหลด Config ไม่สำเร็จ", 3, "circle-alert")
                 end
             end,
         })
@@ -1217,21 +1143,18 @@ function Core.Init(mapName)
                     ConfigDropdown:Refresh(ConfigManager:AllConfigs())
                 end)
 
-                safeNotify(
-                    "Config",
-                    "อัปเดตรายการแล้ว",
-                    2,
-                    "refresh-cw"
-                )
+                safeNotify("Config", "อัปเดตรายการแล้ว", 2, "refresh-cw")
             end,
         })
 
-        State.Config = ConfigManager:CreateConfig("RVX_UI", true)
+        safeCall(function()
+            State.Config = ConfigManager:CreateConfig("RVX_UI", true)
+        end)
     else
         ConfigTab:Paragraph({
             Title = "Config Manager ไม่พร้อมใช้งาน",
             Desc =
-                "WindUI Config Manager ใช้งานไม่ได้ในสภาพแวดล้อมนี้\\n" ..
+                "WindUI Config Manager ใช้งานไม่ได้ในสภาพแวดล้อมนี้\n" ..
                 "ส่วน UI อื่นยังทำงานตามปกติ",
 
             Image = "circle-alert",
@@ -1254,10 +1177,10 @@ function Core.Init(mapName)
         Title = "ระบบหลัก RVX Hub",
         Desc =
             VERSION ..
-            "\\nGame: " .. State.MapName ..
-            "\\nPlayer: " .. getPlayerDisplay() ..
-            "\\nDevice: " .. getDeviceName() ..
-            "\\nExecutor: " .. getExecutorName(),
+            "\nGame: " .. State.MapName ..
+            "\nPlayer: " .. getPlayerDisplay() ..
+            "\nDevice: " .. getDeviceName() ..
+            "\nExecutor: " .. getExecutorName(),
 
         Image = "info",
         ImageSize = 22,
@@ -1270,29 +1193,10 @@ function Core.Init(mapName)
         Icon = "copy",
 
         Callback = function()
-            local copied = false
-
-            pcall(function()
-                if setclipboard then
-                    setclipboard(game.JobId)
-                    copied = true
-                end
-            end)
-
-            if copied then
-                safeNotify(
-                    "Copied",
-                    "คัดลอก Job ID แล้ว",
-                    2,
-                    "copy"
-                )
+            if copyToClipboard(game.JobId) then
+                safeNotify("Copied", "คัดลอก Job ID แล้ว", 2, "copy")
             else
-                safeNotify(
-                    "Clipboard",
-                    "Executor นี้ไม่รองรับ setclipboard",
-                    3,
-                    "circle-alert"
-                )
+                safeNotify("Clipboard", "Executor นี้ไม่รองรับ setclipboard", 3, "circle-alert")
             end
         end,
     })
@@ -1303,29 +1207,10 @@ function Core.Init(mapName)
         Icon = "copy",
 
         Callback = function()
-            local copied = false
-
-            pcall(function()
-                if setclipboard then
-                    setclipboard(tostring(game.PlaceId))
-                    copied = true
-                end
-            end)
-
-            if copied then
-                safeNotify(
-                    "Copied",
-                    "Place ID: " .. tostring(game.PlaceId),
-                    2,
-                    "copy"
-                )
+            if copyToClipboard(tostring(game.PlaceId)) then
+                safeNotify("Copied", "Place ID: " .. tostring(game.PlaceId), 2, "copy")
             else
-                safeNotify(
-                    "Clipboard",
-                    "Executor นี้ไม่รองรับ setclipboard",
-                    3,
-                    "circle-alert"
-                )
+                safeNotify("Clipboard", "Executor นี้ไม่รองรับ setclipboard", 3, "circle-alert")
             end
         end,
     })
@@ -1371,12 +1256,7 @@ function Core.Init(mapName)
 
             setAntiAFK(false)
 
-            safeNotify(
-                "RVX Hub",
-                "คืนค่าการตั้งค่า UI แล้ว",
-                3,
-                "rotate-ccw"
-            )
+            safeNotify("RVX Hub", "คืนค่าการตั้งค่า UI แล้ว", 3, "rotate-ccw")
         end,
     })
 
@@ -1398,12 +1278,7 @@ function Core.Init(mapName)
     -- FINAL
     -- ========================================================
 
-    safeNotify(
-        "RVX Hub",
-        "Loaded • " .. State.MapName,
-        3,
-        "sparkles"
-    )
+    safeNotify("RVX Hub", "Loaded • " .. State.MapName, 3, "sparkles")
 
     return Window, WindUI
 end
