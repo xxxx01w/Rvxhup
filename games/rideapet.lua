@@ -695,7 +695,7 @@ function RideAPet.Init(Window, WindUI)
         end
 
         if not pcall(function() hum:EquipTool(tool) end) then return false end
-        task.wait(0.12)
+        task.wait(0.25)
 
         if target then
             moveMouseToWorld(target)
@@ -709,7 +709,7 @@ function RideAPet.Init(Window, WindUI)
             local full, placed = gardenIsFull()
             if placed > before then return true end
             if full then return false end
-            task.wait(0.15)
+            task.wait(0.25)
         end
         return false
     end
@@ -1229,17 +1229,17 @@ function RideAPet.Init(Window, WindUI)
                         return
                     end
 
-                    task.wait(0.20)
+                    task.wait(0.35)
 
                     -- 2) เก็บไข่
                     triggerAutoCollectPickup(target.prompt, target.part)
-                    task.wait(0.12)
+                    task.wait(0.25)
                     if AutoCollectEnabled and target.prompt and target.prompt.Parent then
                         pcall(function()
                             triggerAutoCollectPickup(target.prompt, target.part)
                         end)
                     end
-                    task.wait(0.18)
+                    task.wait(0.30)
 
                     -- หาเฉพาะไข่ Tool ที่เพิ่งเกิดจากการเก็บรอบนี้
                     local collectedEggTool = nil
@@ -1260,7 +1260,7 @@ function RideAPet.Init(Window, WindUI)
                             if currentHum then currentHum:EquipTool(collectedEggTool) end
                         end)
 
-                        task.wait(0.15)
+                        task.wait(0.25)
 
                         pcall(function()
                             local currentChar = LocalPlayer.Character or Character
@@ -1272,7 +1272,7 @@ function RideAPet.Init(Window, WindUI)
                             end
                         end)
 
-                        task.wait(2.5)
+                        task.wait(3.0)
                     end
 
                     -- 4) ไม่ถือไข่ตอนกลับ
