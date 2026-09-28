@@ -12,7 +12,6 @@ function RideAPet.Init(Window, WindUI)
     local Players = game:GetService("Players")
     local ReplicatedStorage = game:GetService("ReplicatedStorage")
     local Workspace = game:GetService("Workspace")
-    local TweenService = game:GetService("TweenService")
     local CoreGui = game:GetService("CoreGui")
     local GuiService = game:GetService("GuiService")
     local RunService = game:GetService("RunService")
@@ -368,6 +367,41 @@ function RideAPet.Init(Window, WindUI)
     local AutoPlaceBlockedEggs = {}
     local MyPlotCFrame = nil
 
+
+    -- ซ่อนเฉพาะข้อความแจ้งเตือน "Your Egg Was Returned" ถ้าเกมสร้างขึ้นมา
+    -- (เป็นการซ่อน UI เท่านั้น ไม่ได้เปลี่ยนผลลัพธ์ที่เซิร์ฟเวอร์ตรวจสอบ)
+    local ReturnedPopupConnection = nil
+    local function suppressReturnedEggPopup()
+        local function scan(root)
+            if not root then return end
+            for _, obj in ipairs(root:GetDescendants()) do
+                if obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox") then
+                    local s = tostring(obj.Text or ""):lower()
+                    if s:find("your egg was returned", 1, true)
+                        or s:find("egg was returned", 1, true)
+                        or s:find("ไข่ของคุณถูกส่งคืนแล้ว", 1, true)
+                    then
+                        pcall(function() obj.Visible = false end)
+                    end
+                end
+            end
+        end
+
+        if ReturnedPopupConnection then
+            ReturnedPopupConnection:Disconnect()
+        end
+        ReturnedPopupConnection = RunService.RenderStepped:Connect(function()
+            scan(LocalPlayer:FindFirstChildOfClass("PlayerGui"))
+            scan(CoreGui)
+        end)
+    end
+
+    local function stopSuppressReturnedEggPopup()
+        if ReturnedPopupConnection then
+            ReturnedPopupConnection:Disconnect()
+            ReturnedPopupConnection = nil
+        end
+    end
 
     local statusParagraph = nil
     local function setStatus(text)
@@ -766,9 +800,9 @@ function RideAPet.Init(Window, WindUI)
     end
 
     -- ============================================================
-    -- ระบบเก็บไข่ (ทำตามขั้นตอนที่เกมตรวจสอบ)
-    -- 1) บิน (Tween) ไปหาไข่  2) ยิง prompt + ส่ง UUID ของไข่ให้ remote
-    -- 3) รอให้ไข่เข้า Basket/มือ แล้วหน่วงให้เซิร์ฟเวอร์ยืนยัน  4) บินกลับฐาน + ฝากไข่จาก Basket
+    -- ระบบเก็บไข่
+    -- 1) วาปไปหาไข่  2) ยิง prompt + ส่ง UUID ของไข่ให้ remote
+    -- 3) รอให้ไข่เข้า Basket/มือ แล้วหน่วงให้เซิร์ฟเวอร์ยืนยัน  4) วาปกลับฐาน + ฝากไข่จาก Basket
     -- ============================================================
     local function getChar()
         local char = LocalPlayer.Character
@@ -827,34 +861,18 @@ function RideAPet.Init(Window, WindUI)
         return flat <= 38
     end
 
-    local FlightHold = nil
-    local function holdFlight(hrp)
-        if not hrp then return end
-        pcall(function()
+    -- ระบบเดินทาง: ใช้ Teleport โดยตรง ไม่ใช้ระบบบิน/Tween
+    local function teleportTo(pos)
+        local _, hrp = getChar()
+        if not hrp or not pos then return false end
+
+        local target = CFrame.new(pos) * hrp.CFrame.Rotation
+        local ok = pcall(function()
+            hrp.CFrame = target
             hrp.AssemblyLinearVelocity = Vector3.zero
             hrp.AssemblyAngularVelocity = Vector3.zero
         end)
-        if not FlightHold or not FlightHold.Parent or FlightHold.Parent ~= hrp then
-            local old = hrp:FindFirstChild("RVXFlightHold")
-            if old then old:Destroy() end
-            FlightHold = Instance.new("BodyVelocity")
-            FlightHold.Name = "RVXFlightHold"
-            FlightHold.MaxForce = Vector3.new(2e6, 2e6, 2e6)
-            FlightHold.Velocity = Vector3.zero
-            FlightHold.Parent = hrp
-        end
-    end
-
-    local function releaseFlight()
-        if FlightHold then
-            pcall(function() FlightHold:Destroy() end)
-            FlightHold = nil
-        end
-        local _, hrp = getChar()
-        if hrp then
-            local old = hrp:FindFirstChild("RVXFlightHold")
-            if old then pcall(function() old:Destroy() end) end
-        end
+        return ok
     end
 
     local function triggerPrompt(prompt, holdTime)
@@ -951,34 +969,12 @@ function RideAPet.Init(Window, WindUI)
         return true
     end
 
-    -- ตั้งค่าจังหวะเวลา (ปรับได้ใน UI) — เซิร์ฟเวอร์ต้องได้รับตำแหน่งใหม่ก่อนถึงจะยอมรับการเก็บ/การกลับฐาน
+    -- ตั้งค่าจังหวะเวลา — ใช้ Teleport ไปเก็บและ Teleport กลับ
     local Settings = {
-        FlySpeed = 275,     -- ความเร็วบิน (studs/วินาที)
-        ArriveDelay = 0.4,  -- รอหลังถึงไข่ ก่อนกดเก็บ
-        SettleDelay = 1.0,  -- รอหลังเก็บได้ ก่อนบินกลับ
-        BaseDelay = 0.5,    -- รอหลังถึงฐาน ก่อนฝากไข่
+        ArriveDelay = 0.4,  -- รอหลังวาปถึงไข่ ก่อนกดเก็บ
+        SettleDelay = 1.2,  -- รอหลังเก็บได้ ให้เซิร์ฟเวอร์ยืนยันก่อนวาปกลับ
+        BaseDelay = 0.5,    -- รอหลังวาปถึงฐาน ก่อนฝากไข่
     }
-
-    -- บินแบบ Tween ด้วยความเร็วคงที่ (ระยะทาง / ความเร็ว) ไม่ตัดเวลาสูงสุด
-    local function flyTo(pos)
-        local _, hrp = getChar()
-        if not hrp then return false end
-        local dist = (hrp.Position - pos).Magnitude
-        if dist < 0.8 then return true end
-
-        holdFlight(hrp)
-        local duration = math.max(dist / math.max(Settings.FlySpeed, 50), 0.03)
-        local target = CFrame.new(pos) * hrp.CFrame.Rotation
-        local tween = TweenService:Create(hrp, TweenInfo.new(duration, Enum.EasingStyle.Linear), { CFrame = target })
-        tween:Play()
-        tween.Completed:Wait()
-        pcall(function()
-            tween:Destroy()
-            hrp.AssemblyLinearVelocity = Vector3.zero
-            hrp.AssemblyAngularVelocity = Vector3.zero
-        end)
-        return true
-    end
 
     local function processEggCollection(eggData)
         local char, hrp, hum = getChar()
@@ -1007,10 +1003,9 @@ function RideAPet.Init(Window, WindUI)
         local uuid = getEggUuid(model)
 
         setNoClip(true)
-        holdFlight(hrp)
 
-        setStatus("กำลังบินไปหา " .. eggData.name .. "...")
-        flyTo(targetPos)
+        setStatus("กำลังวาปไปหา " .. eggData.name .. "...")
+        teleportTo(targetPos)
 
         -- รอให้เซิร์ฟเวอร์รับตำแหน่งใหม่ (เร็วเกินไป = ระยะเก็บไม่ผ่าน)
         task.wait(Settings.ArriveDelay)
@@ -1064,22 +1059,22 @@ function RideAPet.Init(Window, WindUI)
 
         local collected = false
         if pickupOk then
-            -- หน่วงให้เซิร์ฟเวอร์ยืนยันว่าไข่เป็นของเราแล้ว ก่อนบินกลับ
+            -- หน่วงให้เซิร์ฟเวอร์ยืนยันว่าไข่เป็นของเราแล้ว ก่อนวาปกลับ
             task.wait(Settings.SettleDelay)
-            setStatus("เก็บ " .. eggData.name .. " แล้ว กำลังกลับบ้าน...")
+            setStatus("เก็บ " .. eggData.name .. " แล้ว กำลังวาปกลับบ้าน...")
 
             local basePos = getBasePos()
             if basePos then
                 pcall(function() LocalPlayer:RequestStreamAroundAsync(basePos) end)
-                flyTo(basePos)
+                teleportTo(basePos)
                 task.wait(Settings.BaseDelay)
 
                 if not isOnMyPlot() then
-                    flyTo(basePos)
+                    teleportTo(basePos)
                     task.wait(Settings.BaseDelay)
                 end
             elseif MyPlotCFrame then
-                flyTo(MyPlotCFrame.Position)
+                teleportTo(MyPlotCFrame.Position)
                 task.wait(Settings.BaseDelay)
             end
 
@@ -1109,7 +1104,6 @@ function RideAPet.Init(Window, WindUI)
         end
 
         setNoClip(false)
-        releaseFlight()
         return collected
     end
 
@@ -1121,17 +1115,18 @@ function RideAPet.Init(Window, WindUI)
 
     secFarm:Toggle({
         Title = "เก็บไข่อัตโนมัติ (Auto Steal)",
-        Desc = "บินไปเก็บไข่ที่ตรงเงื่อนไข แล้วบินกลับบ้านอัตโนมัติ",
+        Desc = "วาปไปเก็บไข่ที่ตรงเงื่อนไข แล้ววาปกลับบ้านอัตโนมัติ",
         Value = false,
         Callback = function(state)
             AutoFarmEnabled = state
             if AutoFarmEnabled then
                 if not MyPlotCFrame then saveHomePosition() end
+                suppressReturnedEggPopup()
                 setStatus("กำลังทำงาน...")
             else
+                stopSuppressReturnedEggPopup()
                 setStatus("หยุดแล้ว")
                 setNoClip(false)
-                releaseFlight()
             end
         end,
     })
@@ -1151,15 +1146,7 @@ function RideAPet.Init(Window, WindUI)
     })
 
     secFarm:Slider({
-        Title = "ความเร็วบิน (Fly Speed)",
-        Desc = "บินแบบ Tween ไปเก็บไข่และกลับบ้าน แนะนำ 250-300",
-        Step = 5,
-        Value = { Min = 150, Max = 400, Default = Settings.FlySpeed },
-        Callback = function(v) Settings.FlySpeed = tonumber(v) or Settings.FlySpeed end,
-    })
-
-    secFarm:Slider({
-        Title = "หน่วงหลังถึงไข่ (วินาที)",
+        Title = "หน่วงหลังวาปถึงไข่ (วินาที)",
         Desc = "รอก่อนกดเก็บ ให้เซิร์ฟเวอร์รับตำแหน่งใหม่",
         Step = 0.05,
         Value = { Min = 0.05, Max = 1.5, Default = Settings.ArriveDelay },
@@ -1167,16 +1154,16 @@ function RideAPet.Init(Window, WindUI)
     })
 
     secFarm:Slider({
-        Title = "หน่วงก่อนบินกลับ (วินาที)",
-        Desc = "รอหลังเก็บได้ ก่อนบินกลับบ้าน ถ้าไข่ยังถูกคืนให้เพิ่มค่านี้",
+        Title = "หน่วงก่อนวาปกลับ (วินาที)",
+        Desc = "รอหลังเก็บได้ ก่อนวาปกลับ เพื่อให้เซิร์ฟเวอร์ยืนยันไข่",
         Step = 0.05,
         Value = { Min = 0.1, Max = 4, Default = Settings.SettleDelay },
         Callback = function(v) Settings.SettleDelay = tonumber(v) or Settings.SettleDelay end,
     })
 
     secFarm:Slider({
-        Title = "หน่วงหลังถึงฐาน (วินาที)",
-        Desc = "รอหลังกลับถึงแปลง ก่อนฝากไข่",
+        Title = "หน่วงหลังวาปถึงฐาน (วินาที)",
+        Desc = "รอหลังวาปกลับถึงแปลง ก่อนฝากไข่",
         Step = 0.05,
         Value = { Min = 0.1, Max = 2, Default = Settings.BaseDelay },
         Callback = function(v) Settings.BaseDelay = tonumber(v) or Settings.BaseDelay end,
@@ -1255,7 +1242,6 @@ function RideAPet.Init(Window, WindUI)
                 if not ok then
                     warn("[RideAPet] AutoFarm error: " .. tostring(err))
                     setNoClip(false)
-                    releaseFlight()
                 end
             end
             task.wait(0.6)
