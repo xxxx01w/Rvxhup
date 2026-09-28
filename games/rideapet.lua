@@ -57,7 +57,7 @@ function RideAPet.Init(Window, WindUI)
     -- Remotes
     local Remotes = ReplicatedStorage:WaitForChild("Remotes", 10)
     local GameRemotes = Remotes and Remotes:WaitForChild("Game", 10)
-    local EggPickupRemote = GameRemotes and GameRemotes:WaitForChild("EggPickup", 10)
+    local EggPickupRemote = nil -- เก็บผ่าน ProximityPrompt เท่านั้น ไม่ยิง Remote โดยตรง
 
     -- ============================================================
     -- ข้อมูลไข่
@@ -361,7 +361,7 @@ function RideAPet.Init(Window, WindUI)
     local SelectedEspEggTypes = loadSelection(SavedConfig.SelectedEspEggNames)
     local SelectedPlaceEggTypes = loadSelection(SavedConfig.SelectedPlaceEggNames)
 
-    local AutoFarmEnabled = false
+    local AutoCollectEnabled = false
     local AutoPlaceEnabled = false
     local PlaceMode = SavedConfig.PlaceMode or "วางเฉพาะที่เลือก"
     local AutoPlaceBusy = false
@@ -393,7 +393,7 @@ function RideAPet.Init(Window, WindUI)
     end
 
     RunService.RenderStepped:Connect(function()
-        if AutoFarmEnabled then
+        if AutoCollectEnabled then
             pcall(function() GuiService:SetMenuIsOpen(false) end)
             local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
             if playerGui then
@@ -766,9 +766,9 @@ function RideAPet.Init(Window, WindUI)
     end
 
     -- ============================================================
-    -- ระบบเก็บไข่ (ทำตามขั้นตอนที่เกมตรวจสอบ)
-    -- 1) บิน (Tween) ไปหาไข่  2) ยิง prompt + ส่ง UUID ของไข่ให้ remote
-    -- 3) รอให้ไข่เข้า Basket/มือ แล้วหน่วงให้เซิร์ฟเวอร์ยืนยัน  4) บินกลับฐาน + ฝากไข่จาก Basket
+    -- ระบบเก็บไข่
+    -- 1) วาปไปหาไข่  2) ใช้ ProximityPrompt เหมือนการเก็บด้วยมือ
+    -- 3) รอให้ไข่เข้า Basket/มือจริง  4) วาปกลับฐาน + ฝากไข่จาก Basket
     -- ============================================================
     local function getChar()
         local char = LocalPlayer.Character
@@ -827,300 +827,201 @@ function RideAPet.Init(Window, WindUI)
         return flat <= 38
     end
 
-    local FlightHold = nil
-    local function holdFlight(hrp)
-        if not hrp then return end
+    -- ============================================================
+    -- AUTO COLLECT (จาก EEGPET.NAPHUB.txt)
+    -- ============================================================
+
+    local AutoCollectBusy = false
+
+    local AutoCollectCollisionBackup = {}
+    local AutoCollectTerrainBackup = nil
+
+    local function setAutoCollectNoclip(enabled)
         pcall(function()
-            hrp.AssemblyLinearVelocity = Vector3.zero
-            hrp.AssemblyAngularVelocity = Vector3.zero
+            local char = LocalPlayer.Character or Character
+
+            if enabled then
+                if char then
+                    for _, obj in ipairs(char:GetDescendants()) do
+                        if obj:IsA("BasePart") then
+                            if AutoCollectCollisionBackup[obj] == nil then
+                                AutoCollectCollisionBackup[obj] = obj.CanCollide
+                            end
+                            obj.CanCollide = false
+                            obj.CanTouch = true
+                            obj.CanQuery = true
+                        end
+                    end
+                end
+
+                local plots = Workspace:FindFirstChild("Plots")
+                if plots then
+                    for _, obj in ipairs(plots:GetDescendants()) do
+                        if obj:IsA("BasePart") then
+                            if AutoCollectCollisionBackup[obj] == nil then
+                                AutoCollectCollisionBackup[obj] = obj.CanCollide
+                            end
+                            obj.CanCollide = false
+                        end
+                    end
+                end
+
+                local volcanoRoots = {
+                    Workspace:FindFirstChild("Volcano"),
+                    Workspace:FindFirstChild("Functionals") and Workspace.Functionals:FindFirstChild("VolcanoCutscene")
+                }
+
+                for _, root in ipairs(volcanoRoots) do
+                    if root then
+                        for _, obj in ipairs(root:GetDescendants()) do
+                            if obj:IsA("BasePart") then
+                                if AutoCollectCollisionBackup[obj] == nil then
+                                    AutoCollectCollisionBackup[obj] = obj.CanCollide
+                                end
+                                obj.CanCollide = false
+                            end
+                        end
+                        if root:IsA("BasePart") then
+                            if AutoCollectCollisionBackup[root] == nil then
+                                AutoCollectCollisionBackup[root] = root.CanCollide
+                            end
+                            root.CanCollide = false
+                        end
+                    end
+                end
+
+                if Workspace.Terrain then
+                    if AutoCollectTerrainBackup == nil then
+                        AutoCollectTerrainBackup = Workspace.Terrain.CanCollide
+                    end
+                    Workspace.Terrain.CanCollide = false
+                end
+            else
+                for obj, oldCanCollide in pairs(AutoCollectCollisionBackup) do
+                    if obj and obj.Parent then
+                        obj.CanCollide = oldCanCollide
+                    end
+                    AutoCollectCollisionBackup[obj] = nil
+                end
+
+                if Workspace.Terrain and AutoCollectTerrainBackup ~= nil then
+                    Workspace.Terrain.CanCollide = AutoCollectTerrainBackup
+                end
+                AutoCollectTerrainBackup = nil
+            end
         end)
-        if not FlightHold or not FlightHold.Parent or FlightHold.Parent ~= hrp then
-            local old = hrp:FindFirstChild("RVXFlightHold")
-            if old then old:Destroy() end
-            FlightHold = Instance.new("BodyVelocity")
-            FlightHold.Name = "RVXFlightHold"
-            FlightHold.MaxForce = Vector3.new(2e6, 2e6, 2e6)
-            FlightHold.Velocity = Vector3.zero
-            FlightHold.Parent = hrp
+
+        if enabled then
+            setNoClip(true)
+        else
+            setNoClip(false)
         end
     end
 
-    local function releaseFlight()
-        if FlightHold then
-            pcall(function() FlightHold:Destroy() end)
-            FlightHold = nil
-        end
-        local _, hrp = getChar()
-        if hrp then
-            local old = hrp:FindFirstChild("RVXFlightHold")
-            if old then pcall(function() old:Destroy() end) end
-        end
-    end
+    local function triggerAutoCollectPickup(prompt, eggPart)
+        if not prompt or not prompt.Parent or not prompt.Enabled then return false end
 
-    local function triggerPrompt(prompt, holdTime)
-        if not prompt or not prompt.Parent then return end
-        local executed = false
-        if fireproximityprompt then
-            executed = pcall(function() fireproximityprompt(prompt, 0) end)
-        end
-        if not executed and prompt.InputHoldBegin and prompt.InputHoldEnd then
+        if typeof(fireproximityprompt) == "function" then
+            pcall(function()
+                fireproximityprompt(prompt)
+            end)
+            pcall(function()
+                fireproximityprompt(prompt, prompt.HoldDuration or 0.2)
+            end)
+        else
             pcall(function()
                 prompt:InputHoldBegin()
-                task.wait(holdTime or (prompt.HoldDuration > 0 and (prompt.HoldDuration + 0.05) or 0.15))
+                task.wait((prompt.HoldDuration or 0.2) + 0.05)
                 prompt:InputHoldEnd()
             end)
         end
-    end
 
-    -- หา UUID ของไข่จาก ReplicatedStorage.ServerData.ActiveEggs (จับคู่จากตำแหน่ง)
-    local function getEggUuid(eggModel)
-        local part = eggModel:FindFirstChildWhichIsA("BasePart", true) or eggModel.PrimaryPart
-        local eggPos = part and part.Position or eggModel:GetPivot().Position
-        local sd = ReplicatedStorage:FindFirstChild("ServerData")
-        local folder = sd and sd:FindFirstChild("ActiveEggs")
-        if folder then
-            local best, bestDist = nil, 25
-            for _, ae in ipairs(folder:GetChildren()) do
-                local pos = ae:GetAttribute("Position")
-                if typeof(pos) == "string" then
-                    local c = string.split(pos, ",")
-                    if #c == 3 then pos = Vector3.new(tonumber(c[1]), tonumber(c[2]), tonumber(c[3])) end
-                end
-                if typeof(pos) == "Vector3" then
-                    local h = (Vector3.new(pos.X, 0, pos.Z) - Vector3.new(eggPos.X, 0, eggPos.Z)).Magnitude
-                    local v = math.abs(pos.Y - eggPos.Y)
-                    if h < 15 and v < 45 and h < bestDist then best, bestDist = ae, h end
-                end
-            end
-            if best then return best.Name end
-        end
-        -- fallback: ดึง UUID จาก upvalue ของ prompt (ต้องใช้ getconnections)
-        local prompt = eggModel:FindFirstChildWhichIsA("ProximityPrompt", true)
-        if prompt and getconnections and getupvalues then
-            local uuid
-            pcall(function()
-                for _, c in ipairs(getconnections(prompt.Triggered)) do
-                    if c.Function then
-                        for _, u in pairs(getupvalues(c.Function)) do
-                            if typeof(u) == "Instance" and u.Parent and u.Parent.Name == "ActiveEggs" then
-                                uuid = u.Name break
-                            elseif type(u) == "string" and #u > 20 and u:find("-") then
-                                uuid = u break
+        pcall(function()
+            local serverData = ReplicatedStorage:FindFirstChild("ServerData")
+            local activeEggs = serverData and serverData:FindFirstChild("ActiveEggs")
+            local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+            local gameRemotes = remotes and remotes:FindFirstChild("Game")
+            local eggPickupRemote = gameRemotes and gameRemotes:FindFirstChild("EggPickup")
+
+            if activeEggs and eggPickupRemote and eggPart then
+                for _, act in ipairs(activeEggs:GetChildren()) do
+                    local pos = act:GetAttribute("Position")
+                    if typeof(pos) == "Vector3" and (pos - eggPart.Position).Magnitude < 15 then
+                        eggPickupRemote:FireServer(act.Name)
+                        break
+                    elseif type(pos) == "string" then
+                        local c = string.split(pos, ",")
+                        if #c == 3 then
+                            local v = Vector3.new(tonumber(c[1]), tonumber(c[2]), tonumber(c[3]))
+                            if (v - eggPart.Position).Magnitude < 15 then
+                                eggPickupRemote:FireServer(act.Name)
+                                break
                             end
                         end
                     end
-                    if uuid then break end
                 end
-            end)
-            return uuid
-        end
-        return nil
-    end
+            end
+        end)
 
-    local function isEggTool(it)
-        return it:IsA("Tool") and (it.Name:find("Egg") or it:GetAttribute("Egg") or it:GetAttribute("IsEgg"))
-    end
-
-    -- ฝากไข่จาก Basket เข้ากระเป๋า โดยแตะ Baseplate ของแปลงตัวเอง
-    local function depositBasket()
-        local plot = getMyPlot()
-        local baseplate = plot and plot:FindFirstChild("Baseplate")
-        local _, hrp = getChar()
-        if not baseplate or not hrp then return false end
-        local basket = LocalPlayer:FindFirstChild("Basket")
-        if not basket or #basket:GetChildren() == 0 then return true end
-
-        local rel = baseplate.CFrame:PointToObjectSpace(hrp.Position)
-        local onPlate = math.abs(rel.X) <= (baseplate.Size.X / 2 + 5) and math.abs(rel.Z) <= (baseplate.Size.Z / 2 + 5)
-        if not onPlate then
-            local y = baseplate.Position.Y + baseplate.Size.Y / 2 + 2.5
-            hrp.CFrame = CFrame.new(Vector3.new(baseplate.Position.X, y, baseplate.Position.Z))
-            task.wait(0.04)
-        end
-        if firetouchinterest then
-            pcall(function()
-                firetouchinterest(hrp, baseplate, 0)
-                task.wait(0.04)
-                firetouchinterest(hrp, baseplate, 1)
-            end)
-        end
-        local t0 = tick()
-        while tick() - t0 < 0.8 and #basket:GetChildren() > 0 do
-            task.wait(0.04)
-        end
         return true
     end
 
-    -- ตั้งค่าจังหวะเวลา (ปรับได้ใน UI) — เซิร์ฟเวอร์ต้องได้รับตำแหน่งใหม่ก่อนถึงจะยอมรับการเก็บ/การกลับฐาน
-    local Settings = {
-        ArriveDelay = 0.05,
-        SettleDelay = 0.1,
-        BaseDelay = 0.1,
-        FlySpeed = 300,
-    }
+    local function autoCollectEggName(egg)
+        local attr = egg:GetAttribute("Egg") or egg:GetAttribute("EggType") or egg:GetAttribute("Type")
+        return type(attr) == "string" and attr ~= "" and attr or egg.Name
+    end
 
-    -- บินแบบ Tween ด้วยความเร็วคงที่ (ระยะทาง / ความเร็ว) ไม่ตัดเวลาสูงสุด
-    local function flyTo(pos)
-        local _, hrp = getChar()
-        if not hrp then return false end
-        local dist = (hrp.Position - pos).Magnitude
-        if dist < 0.8 then return true end
+    local function autoCollectMatches(eggName)
+        return isSelected(SelectedEggTypes, eggName)
+    end
 
-        holdFlight(hrp)
-        local duration = math.max(dist / math.max(Settings.FlySpeed, 50), 0.03)
-        local target = CFrame.new(pos) * hrp.CFrame.Rotation
-        local tween = TweenService:Create(hrp, TweenInfo.new(duration, Enum.EasingStyle.Linear), { CFrame = target })
-        tween:Play()
-        tween.Completed:Wait()
+    local function autoCollectTeleport(targetCFrame)
+        if not AutoCollectEnabled then return false end
+        local char, hrp = getChar()
+        if not char or not hrp then return false end
+
         pcall(function()
-            tween:Destroy()
             hrp.AssemblyLinearVelocity = Vector3.zero
             hrp.AssemblyAngularVelocity = Vector3.zero
         end)
-        return true
-    end
 
-    local function teleportTo(pos)
-        local _, hrp = getChar()
-        if not hrp or not pos then return false end
+        local ok = pcall(function()
+            char:PivotTo(targetCFrame)
+        end)
+        if not ok then
+            ok = pcall(function()
+                hrp.CFrame = targetCFrame
+            end)
+        end
+
         pcall(function()
-            hrp.CFrame = CFrame.new(pos) * hrp.CFrame.Rotation
             hrp.AssemblyLinearVelocity = Vector3.zero
             hrp.AssemblyAngularVelocity = Vector3.zero
         end)
-        return true
+        return ok
     end
 
-    local function processEggCollection(eggData)
-        local char, hrp, hum = getChar()
-        if not hrp or not hum or hum.Health <= 0 then return false end
-        if not eggData or not eggData.model or not eggData.model.Parent then return false end
-
-        if not MyPlotCFrame then saveHomePosition() end
-
-        -- ฝากไข่ที่ค้างใน Basket ก่อนเริ่มรอบใหม่
-        local basket = LocalPlayer:FindFirstChild("Basket")
-        if basket and #basket:GetChildren() > 0 then
-            depositBasket()
-            task.wait(0.08)
-        end
-
-        local model = eggData.model
-        local prompt = eggData.prompt
-        if not prompt or not prompt.Parent then
-            prompt = model:FindFirstChildWhichIsA("ProximityPrompt", true)
-        end
-
-        local part = model:FindFirstChildWhichIsA("BasePart", true) or model.PrimaryPart
-        local eggPos = part and part.Position or model:GetPivot().Position
-        local targetPos = eggPos + Vector3.new(0, 1.8, 0)
-
-        local uuid = getEggUuid(model)
-
-        setNoClip(true)
-        setStatus("กำลังวาปไปหา " .. eggData.name .. "...")
-        teleportTo(targetPos)
-
-        -- รอให้เซิร์ฟเวอร์รับตำแหน่งใหม่ (เร็วเกินไป = ระยะเก็บไม่ผ่าน)
-        task.wait(Settings.ArriveDelay)
-        pcall(function() hrp.AssemblyLinearVelocity = Vector3.zero end)
-
-        local basketNow = LocalPlayer:FindFirstChild("Basket")
-        local prevBasketCount = basketNow and #basketNow:GetChildren() or 0
-
-        local signal = nil
-        local function acquired()
-            local b = LocalPlayer:FindFirstChild("Basket")
-            if b and #b:GetChildren() > prevBasketCount then signal = "basket" return true end
-            local c = LocalPlayer.Character
-            if c then
-                for _, it in ipairs(c:GetChildren()) do
-                    if isEggTool(it) then signal = "tool" return true end
-                end
-            end
-            if not model or not model.Parent then signal = "model-gone" return true end
-            return false
-        end
-
-        local pickupOk = false
-        local pickupTime = 0
-        local deadline = tick() + 2.5
-        local attempt = 0
-        while tick() < deadline and not pickupOk do
-            attempt = attempt + 1
-            if prompt and prompt.Parent and prompt.Enabled then
-                if attempt == 1 then
-                    triggerPrompt(prompt, 0.05)
-                else
-                    -- รอบถัดไปจำลองการกดค้างตาม HoldDuration จริงของ prompt
-                    pcall(function()
-                        prompt:InputHoldBegin()
-                        task.wait((prompt.HoldDuration or 0) + 0.08)
-                        prompt:InputHoldEnd()
-                    end)
-                end
-            end
-            -- remote รับ UUID ของไข่ (ไม่ใช่ Model)
-            if EggPickupRemote and uuid then
-                pcall(function() EggPickupRemote:FireServer(uuid) end)
-            end
-            task.wait(0.15)
-            if acquired() then
-                pickupOk = true
-                pickupTime = tick()
-            end
-        end
-
-        local collected = false
-        if pickupOk then
-            -- หน่วงให้เซิร์ฟเวอร์ยืนยันว่าไข่เป็นของเราแล้ว ก่อนบินกลับ
-            task.wait(Settings.SettleDelay)
-            setStatus("เก็บ " .. eggData.name .. " แล้ว กำลังกลับบ้าน...")
-
-            local basePos = getBasePos()
-            if basePos then
-                pcall(function() LocalPlayer:RequestStreamAroundAsync(basePos) end)
-                teleportTo(basePos)
-                task.wait(Settings.BaseDelay)
-
-                if not isOnMyPlot() then
-                    teleportTo(basePos)
-                    task.wait(Settings.BaseDelay)
-                end
-            elseif MyPlotCFrame then
-                teleportTo(MyPlotCFrame.Position)
-                task.wait(Settings.BaseDelay)
-            end
-
-            depositBasket()
-
-            pcall(function() hum:UnequipTools() end)
-            task.wait(0.08)
-
-            local b = LocalPlayer:FindFirstChild("Basket")
-            local basketLeft = b and #b:GetChildren() or 0
-            collected = basketLeft == 0
-            warn(string.format(
-                "[RideAPet] %s | signal=%s uuid=%s hold=%s basketLeft=%d onPlot=%s carry=%.2fs",
-                eggData.name, tostring(signal), tostring(uuid ~= nil),
-                tostring(prompt and prompt.HoldDuration), basketLeft,
-                tostring(isOnMyPlot()),
-                tick() - pickupTime
-            ))
-            setStatus(collected and ("เก็บ " .. eggData.name .. " เข้ากระเป๋าแล้ว") or "ไข่ยังค้างในตะกร้า — ลองฝากใหม่...")
-        else
-            warn(string.format(
-                "[RideAPet] เก็บ %s ไม่สำเร็จ | uuid=%s hold=%s enabled=%s attempts=%d",
-                eggData.name, tostring(uuid ~= nil),
-                tostring(prompt and prompt.HoldDuration), tostring(prompt and prompt.Enabled), attempt
-            ))
-            setStatus("เกมยังไม่ยอมรับการเก็บ " .. eggData.name .. " — ลองใหม่...")
-        end
-
-        setNoClip(false)
-        releaseFlight()
-        return collected
+    local function isEggToolForAutoCollect(item)
+        return item and item:IsA("Tool") and (
+            tostring(item.Name):find("Egg", 1, true) ~= nil
+            or item:GetAttribute("Egg") ~= nil
+            or item:GetAttribute("IsEgg") ~= nil
+        )
     end
+
+    LocalPlayer.CharacterAdded:Connect(function(newCharacter)
+        Character = newCharacter
+        task.defer(function()
+            if not AutoCollectEnabled then
+                for _, obj in ipairs(newCharacter:GetDescendants()) do
+                    if obj:IsA("BasePart") then
+                        obj.CanCollide = true
+                    end
+                end
+            end
+        end)
+    end)
+
 
     -- ===== UI Interface =====
     local GameSection = Window.RVXGameSection or Window
@@ -1129,18 +1030,18 @@ function RideAPet.Init(Window, WindUI)
     local secFarm = FarmTab:Section({ Title = "ฟาร์มไข่อัตโนมัติ (Auto Egg Farm)" })
 
     secFarm:Toggle({
-        Title = "เก็บไข่อัตโนมัติ (Auto Steal)",
-        Desc = "วาปไปเก็บไข่ที่ตรงเงื่อนไข แล้ววาปกลับบ้านอัตโนมัติ",
+        Title = "เก็บไข่อัตโนมัติ (Auto Collect)",
+        Desc = "วาร์ปไปเก็บไข่ตามชนิดที่เลือก ถือไข่ที่เพิ่งเก็บลงใต้แมพชั่วคราว แล้วกลับจุดเดิม",
         Value = false,
         Callback = function(state)
-            AutoFarmEnabled = state
-            if AutoFarmEnabled then
+            AutoCollectEnabled = state
+            if AutoCollectEnabled then
                 if not MyPlotCFrame then saveHomePosition() end
                 setStatus("กำลังทำงาน...")
             else
                 setStatus("หยุดแล้ว")
-                setNoClip(false)
-                releaseFlight()
+                AutoCollectBusy = false
+                setAutoCollectNoclip(false)
             end
         end,
     })
@@ -1222,30 +1123,207 @@ function RideAPet.Init(Window, WindUI)
 
     task.spawn(function()
         while true do
-            if AutoFarmEnabled then
-                local ok, err = pcall(function()
-                    local eggs = getAvailableEggs()
-                    if #eggs > 0 then
-                        local bestTarget = eggs[1]
-                        setStatus("เป้าหมาย: " .. bestTarget.name .. " (" .. bestTarget.rarity .. ")")
-                        processEggCollection(bestTarget)
-                    else
-                        setStatus("รอไข่ชนิดที่เลือกไว้...")
+            if AutoCollectEnabled and not AutoCollectBusy then
+                AutoCollectBusy = true
+                pcall(function()
+                    local rendered = Workspace:FindFirstChild("RenderedEggs")
+                    if not rendered then
+                        AutoCollectBusy = false
+                        return
                     end
+
+                    local char, hrp, hum = getChar()
+                    if not hrp or not hum or hum.Health <= 0 then
+                        AutoCollectBusy = false
+                        return
+                    end
+
+                    -- ใช้จุดเดิมก่อนเริ่มรอบ และเลือกไข่ที่ตรง Filter ที่อยู่ใกล้ที่สุด
+                    local originCFrame = hrp.CFrame
+                    local originPosition = hrp.Position
+                    local candidates = {}
+
+                    for _, egg in ipairs(rendered:GetChildren()) do
+                        if not AutoCollectEnabled then break end
+
+                        local eggName = autoCollectEggName(egg)
+                        if autoCollectMatches(eggName) then
+                            local eggBase = egg:FindFirstChild("EggBase") or egg:FindFirstChildWhichIsA("BasePart", true)
+                            local prompt = egg:FindFirstChildWhichIsA("ProximityPrompt", true)
+                            local promptPart = nil
+
+                            if prompt then
+                                if prompt.Parent and prompt.Parent:IsA("BasePart") then
+                                    promptPart = prompt.Parent
+                                elseif prompt.Parent and prompt.Parent:IsA("Attachment") then
+                                    promptPart = prompt.Parent.Parent
+                                else
+                                    local ancestor = prompt.Parent
+                                    while ancestor and ancestor ~= egg do
+                                        if ancestor:IsA("BasePart") then
+                                            promptPart = ancestor
+                                            break
+                                        end
+                                        ancestor = ancestor.Parent
+                                    end
+                                end
+                            end
+
+                            local pickupPart = promptPart or eggBase
+                            if pickupPart and prompt then
+                                table.insert(candidates, {
+                                    egg = egg,
+                                    part = pickupPart,
+                                    prompt = prompt,
+                                    name = eggName,
+                                    distance = (pickupPart.Position - originPosition).Magnitude,
+                                })
+                            end
+                        end
+                    end
+
+                    table.sort(candidates, function(a, b)
+                        return a.distance < b.distance
+                    end)
+
+                    local target = candidates[1]
+                    if not target then
+                        setStatus("รอไข่ชนิดที่เลือกไว้...")
+                        AutoCollectBusy = false
+                        return
+                    end
+
+                    setStatus("เป้าหมาย: " .. tostring(target.name))
+                    setAutoCollectNoclip(true)
+
+                    -- ก่อนออกไปหาไข่ ต้องไม่ถือ Tool เดิมไว้
+                    pcall(function()
+                        if hum then hum:UnequipTools() end
+                    end)
+
+                    local backpackBeforePickup = {}
+                    pcall(function()
+                        for _, item in ipairs(LocalPlayer.Backpack:GetChildren()) do
+                            if item:IsA("Tool") then
+                                backpackBeforePickup[item] = true
+                            end
+                        end
+                    end)
+
+                    -- 1) วาร์ปไปยังจุด Prompt จริง
+                    local pickupCFrame = target.part.CFrame + Vector3.new(0, 1.35, 0)
+                    autoCollectTeleport(pickupCFrame)
+
+                    pcall(function()
+                        local root = (LocalPlayer.Character or Character) and (LocalPlayer.Character or Character):FindFirstChild("HumanoidRootPart")
+                        if root and target.part and target.part.Parent then
+                            root.AssemblyLinearVelocity = Vector3.zero
+                            root.AssemblyAngularVelocity = Vector3.zero
+                            root.CFrame = CFrame.new(target.part.Position + Vector3.new(0, 1.35, 0), target.part.Position)
+                        end
+                    end)
+
+                    if not AutoCollectEnabled then
+                        setAutoCollectNoclip(false)
+                        AutoCollectBusy = false
+                        return
+                    end
+
+                    task.wait(0.20)
+
+                    -- 2) เก็บไข่
+                    triggerAutoCollectPickup(target.prompt, target.part)
+                    task.wait(0.12)
+                    if AutoCollectEnabled and target.prompt and target.prompt.Parent then
+                        pcall(function()
+                            triggerAutoCollectPickup(target.prompt, target.part)
+                        end)
+                    end
+                    task.wait(0.18)
+
+                    -- หาเฉพาะไข่ Tool ที่เพิ่งเกิดจากการเก็บรอบนี้
+                    local collectedEggTool = nil
+                    pcall(function()
+                        for _, item in ipairs(LocalPlayer.Backpack:GetChildren()) do
+                            if isEggToolForAutoCollect(item) and not backpackBeforePickup[item] then
+                                collectedEggTool = item
+                                break
+                            end
+                        end
+                    end)
+
+                    -- 3) ถือไข่ที่เพิ่งเก็บ แล้วลงใต้แมพชั่วคราว
+                    if collectedEggTool then
+                        pcall(function()
+                            local currentChar = LocalPlayer.Character or Character
+                            local currentHum = currentChar and currentChar:FindFirstChildOfClass("Humanoid")
+                            if currentHum then currentHum:EquipTool(collectedEggTool) end
+                        end)
+
+                        task.wait(0.15)
+
+                        pcall(function()
+                            local currentChar = LocalPlayer.Character or Character
+                            local root = currentChar and currentChar:FindFirstChild("HumanoidRootPart")
+                            if root then
+                                root.AssemblyLinearVelocity = Vector3.zero
+                                root.AssemblyAngularVelocity = Vector3.zero
+                                currentChar:PivotTo(root.CFrame * CFrame.new(0, -5000, 0))
+                            end
+                        end)
+
+                        task.wait(2.5)
+                    end
+
+                    -- 4) ไม่ถือไข่ตอนกลับ
+                    pcall(function()
+                        local currentChar = LocalPlayer.Character or Character
+                        local currentHum = currentChar and currentChar:FindFirstChildOfClass("Humanoid")
+                        if currentHum then currentHum:UnequipTools() end
+                    end)
+
+                    -- 5) กลับตำแหน่งเดิมทันที
+                    if AutoCollectEnabled then
+                        local returned = false
+                        for _ = 1, 20 do
+                            if not AutoCollectEnabled then break end
+                            local currentChar = LocalPlayer.Character or Character
+                            local root = currentChar and currentChar:FindFirstChild("HumanoidRootPart")
+                            if root then
+                                root.AssemblyLinearVelocity = Vector3.zero
+                                root.AssemblyAngularVelocity = Vector3.zero
+                                currentChar:PivotTo(originCFrame)
+                                if (root.Position - originPosition).Magnitude <= 10 then
+                                    returned = true
+                                    break
+                                end
+                            end
+                            RunService.Heartbeat:Wait()
+                        end
+                        if not returned then
+                            local currentChar = LocalPlayer.Character or Character
+                            local root = currentChar and currentChar:FindFirstChild("HumanoidRootPart")
+                            if root then
+                                root.AssemblyLinearVelocity = Vector3.zero
+                                root.AssemblyAngularVelocity = Vector3.zero
+                                currentChar:PivotTo(originCFrame)
+                            end
+                        end
+                    end
+
+                    setAutoCollectNoclip(false)
                 end)
-                if not ok then
-                    warn("[RideAPet] AutoFarm error: " .. tostring(err))
-                    setNoClip(false)
-                    releaseFlight()
-                end
+
+                setAutoCollectNoclip(false)
+                AutoCollectBusy = false
             end
-            task.wait(0.6)
+            task.wait()
         end
     end)
 
     task.spawn(function()
         while true do
-            if AutoPlaceEnabled and (not AutoFarmEnabled or isNearHomeForPlace()) then
+            if AutoPlaceEnabled and (not AutoCollectEnabled or isNearHomeForPlace()) then
                 processAutoPlaceOnce()
             end
             task.wait(0.8)
@@ -1425,48 +1503,6 @@ function RideAPet.Init(Window, WindUI)
                 end
             end
             task.wait(0.5)
-        end
-    end)
-
-
-    -- ===== DEBUG (passive): จับสาเหตุที่ไข่ถูกยึดตอนเดินเก็บเอง =====
-    -- แค่ "ฟัง" เหตุการณ์และ warn ลง console (F9) ไม่ยุ่งกับการเก็บไข่ของเกม
-    task.spawn(function()
-        local function join(...)
-            local t = {}
-            for i = 1, select("#", ...) do t[i] = tostring((select(i, ...))) end
-            return table.concat(t, ", ")
-        end
-        local function log(...)
-            warn("[RideAPet][DEBUG] " .. join(...) .. string.format(" | farm=%s place=%s", tostring(AutoFarmEnabled), tostring(AutoPlaceEnabled)))
-        end
-
-        local function watchBasket(b)
-            b.ChildAdded:Connect(function(c) log("Basket +", c.Name) end)
-            b.ChildRemoved:Connect(function(c) log("Basket -", c.Name) end)
-        end
-        local b = LocalPlayer:FindFirstChild("Basket")
-        if b then watchBasket(b) end
-        LocalPlayer.ChildAdded:Connect(function(c)
-            if c.Name == "Basket" then log("Basket created") watchBasket(c) end
-        end)
-
-        local function watchTools(container)
-            if not container then return end
-            container.ChildAdded:Connect(function(c) if c:IsA("Tool") then log("Tool +", c.Name, container.Name) end end)
-            container.ChildRemoved:Connect(function(c) if c:IsA("Tool") then log("Tool -", c.Name, container.Name) end end)
-        end
-        watchTools(LocalPlayer:FindFirstChildOfClass("Backpack"))
-        watchTools(LocalPlayer.Character)
-        LocalPlayer.CharacterAdded:Connect(function(ch) log("CharacterAdded") watchTools(ch) end)
-
-        -- ข้อความ/ข้อมูลที่เซิร์ฟเวอร์ส่งมาให้ client (มักบอกเหตุผลที่ยึด)
-        if Remotes then
-            for _, r in ipairs(Remotes:GetDescendants()) do
-                if r:IsA("RemoteEvent") then
-                    if r.Name ~= "PetCollect" then r.OnClientEvent:Connect(function(...) log("S->C", r.Name, join(...)) end) end
-                end
-            end
         end
     end)
 
