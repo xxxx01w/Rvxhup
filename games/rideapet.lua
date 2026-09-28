@@ -20,6 +20,7 @@ function RideAPet.Init(Window, WindUI)
     local HttpService = game:GetService("HttpService")
 
     local LocalPlayer = Players.LocalPlayer
+    local Character = LocalPlayer.Character
 
     -- ===== ระบบจดจำการตั้งค่า (Auto Save Config) =====
     local CONFIG_FILE = "RVXHub_RideAPetConfig.json"
@@ -392,8 +393,10 @@ function RideAPet.Init(Window, WindUI)
         })
     end
 
+    local lastPauseScan = 0
     RunService.RenderStepped:Connect(function()
-        if AutoCollectEnabled then
+        if AutoCollectEnabled and tick() - lastPauseScan >= 0.2 then
+            lastPauseScan = tick()
             pcall(function() GuiService:SetMenuIsOpen(false) end)
             local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
             if playerGui then
@@ -832,6 +835,12 @@ function RideAPet.Init(Window, WindUI)
     -- ============================================================
 
     local AutoCollectBusy = false
+    local FailedEggs = setmetatable({}, { __mode = "k" }) -- egg model -> เวลาที่เก็บพลาด
+
+    local function countBasket()
+        local b = LocalPlayer:FindFirstChild("Basket")
+        return b and #b:GetChildren() or 0
+    end
 
     local AutoCollectCollisionBackup = {}
     local AutoCollectTerrainBackup = nil
@@ -1170,7 +1179,7 @@ function RideAPet.Init(Window, WindUI)
                             end
 
                             local pickupPart = promptPart or eggBase
-                            if pickupPart and prompt then
+                            if pickupPart and prompt and not (FailedEggs[egg] and tick() - FailedEggs[egg] < 8) then
                                 table.insert(candidates, {
                                     egg = egg,
                                     part = pickupPart,
@@ -1189,6 +1198,7 @@ function RideAPet.Init(Window, WindUI)
                     local target = candidates[1]
                     if not target then
                         setStatus("รอไข่ชนิดที่เลือกไว้...")
+                        task.wait(0.3)
                         AutoCollectBusy = false
                         return
                     end
@@ -1202,6 +1212,7 @@ function RideAPet.Init(Window, WindUI)
                     end)
 
                     local backpackBeforePickup = {}
+                    local basketBefore = countBasket()
                     pcall(function()
                         for _, item in ipairs(LocalPlayer.Backpack:GetChildren()) do
                             if item:IsA("Tool") then
@@ -1251,6 +1262,12 @@ function RideAPet.Init(Window, WindUI)
                             end
                         end
                     end)
+
+                    -- เก็บไม่สำเร็จ (ไม่มี Tool ใหม่ และ Basket ไม่เพิ่ม) -> ข้ามไข่ใบนี้ 8 วินาที กันวนเก็บซ้ำ
+                    if not collectedEggTool and countBasket() <= basketBefore then
+                        FailedEggs[target.egg] = tick()
+                        setStatus("เก็บ " .. tostring(target.name) .. " ไม่สำเร็จ — ข้ามไปก่อน")
+                    end
 
                     -- 3) ถือไข่ที่เพิ่งเก็บ แล้วลงใต้แมพชั่วคราว
                     if collectedEggTool then
@@ -1506,34 +1523,6 @@ function RideAPet.Init(Window, WindUI)
         end
     end)
 
-
-    -- ===== DEBUG (passive): log เหตุการณ์ไข่ลง console (F9) — ลบทิ้งได้ =====
-    task.spawn(function()
-        local function join(...)
-            local t = {}
-            for i = 1, select("#", ...) do t[i] = tostring((select(i, ...))) end
-            return table.concat(t, ", ")
-        end
-        local function log(...)
-            warn("[RideAPet][DEBUG] " .. join(...) .. string.format(" | collect=%s place=%s", tostring(AutoCollectEnabled), tostring(AutoPlaceEnabled)))
-        end
-        local function watchBasket(b)
-            b.ChildAdded:Connect(function(c) log("Basket +", c.Name) end)
-            b.ChildRemoved:Connect(function(c) log("Basket -", c.Name) end)
-        end
-        local b = LocalPlayer:FindFirstChild("Basket")
-        if b then watchBasket(b) end
-        LocalPlayer.ChildAdded:Connect(function(c)
-            if c.Name == "Basket" then log("Basket created") watchBasket(c) end
-        end)
-        if Remotes then
-            for _, r in ipairs(Remotes:GetDescendants()) do
-                if r:IsA("RemoteEvent") and r.Name ~= "PetCollect" then
-                    r.OnClientEvent:Connect(function(...) log("S->C", r.Name, join(...)) end)
-                end
-            end
-        end
-    end)
 
     print("[RideAPet] Loaded Successfully — eggs: " .. #SortedEggs)
 end
