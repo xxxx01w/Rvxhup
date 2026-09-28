@@ -1,76 +1,140 @@
 --[[
-    RVX HUB - Main Loader
-    Repository: https://github.com/xxxx01w/Rvxhup
-]]
+    RVX Hub - Main Loader
+    One link for all supported maps.
+    Repository: xxxx01w/Rvxhup
+--]]
 
 local REPO = "https://raw.githubusercontent.com/xxxx01w/Rvxhup/main"
 
 local function loadRemote(path)
     local url = REPO .. "/" .. path
-    local ok, result = pcall(function()
-        local source = game:HttpGet(url)
-        local chunk, err = loadstring(source)
-        if not chunk then error(err or ("Failed to compile: " .. path)) end
-        return chunk()
-    end)
-    if not ok then
-        error("[RVX HUB] Failed to load " .. path .. ": " .. tostring(result))
+
+    local source = game:HttpGet(url)
+    if type(source) ~= "string" or source == "" then
+        error("[RVX Hub] Empty response: " .. url)
     end
-    return result
+
+    local chunk, compileError = loadstring(source)
+    if not chunk then
+        error("[RVX Hub] Compile failed: " .. path .. "\n" .. tostring(compileError))
+    end
+
+    return chunk()
 end
 
-local Core = loadRemote("core.lua")
+-- ============================================================
+-- CORE
+-- ============================================================
+
+local okCore, Core = pcall(function()
+    return loadRemote("core.lua")
+end)
+
+if not okCore then
+    error("[RVX Hub] Core load failed:\n" .. tostring(Core))
+end
 
 if type(Core) ~= "table" or type(Core.Init) ~= "function" then
-    error("[RVX HUB] core.lua did not return Core.Init()")
+    error("[RVX Hub] core.lua ไม่ได้ return Core ที่มี Init(mapName)")
 end
 
-local mapName = "Universal"
+-- ============================================================
+-- MAP NAME
+-- ============================================================
+
+local mapName = "Unknown Map"
+
 pcall(function()
-    local info = game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId)
+    local MarketplaceService = game:GetService("MarketplaceService")
+    local info = MarketplaceService:GetProductInfo(game.PlaceId)
+
     if info and info.Name and info.Name ~= "" then
         mapName = info.Name
     end
 end)
 
-local Window, WindUI = Core.Init(mapName)
-if not Window then
-    error("[RVX HUB] Core.Init() did not return a Window")
+-- ============================================================
+-- INITIALIZE CORE
+-- ============================================================
+
+local okInit, Window, WindUI = pcall(function()
+    return Core.Init(mapName)
+end)
+
+if not okInit then
+    error("[RVX Hub] Core.Init failed:\n" .. tostring(Window))
 end
+
+if not Window then
+    error("[RVX Hub] Core.Init did not return Window")
+end
+
+-- ============================================================
+-- GAME MODULES
+-- ============================================================
 
 local MAP_MODULES = {
     [124216119978534] = "games/rideapet.lua",
 }
 
 local modulePath = MAP_MODULES[game.PlaceId]
+
 if not modulePath then
-    pcall(function()
-        WindUI:Notify({
-            Title = "RVX HUB",
-            Content = "ยังไม่มีฟังก์ชันสำหรับแมพนี้",
-            Duration = 4,
-        })
-    end)
+    if WindUI then
+        pcall(function()
+            WindUI:Notify({
+                Title = "RVX Hub",
+                Content = "ยังไม่มีฟังก์ชันสำหรับแมพนี้",
+                Duration = 4,
+            })
+        end)
+    end
     return
 end
 
-local Module = loadRemote(modulePath)
+local okModule, Module = pcall(function()
+    return loadRemote(modulePath)
+end)
 
-if type(Module) ~= "table" or type(Module.Init) ~= "function" then
-    error("[RVX HUB] " .. modulePath .. " ต้อง return table ที่มี Init(Window, WindUI)")
+if not okModule then
+    warn("[RVX Hub] Failed to load " .. modulePath .. ": " .. tostring(Module))
+
+    if WindUI then
+        pcall(function()
+            WindUI:Notify({
+                Title = "RVX Hub",
+                Content = "โหลดไฟล์แมพไม่สำเร็จ",
+                Duration = 5,
+            })
+        end)
+    end
+
+    return
 end
 
-local ok, err = pcall(function()
+if type(Module) ~= "table" or type(Module.Init) ~= "function" then
+    warn("[RVX Hub] Invalid game module: " .. modulePath)
+    return
+end
+
+-- ============================================================
+-- START GAME MODULE
+-- ============================================================
+
+local okGame, gameError = pcall(function()
     Module.Init(Window, WindUI)
 end)
 
-if not ok then
-    warn("[RVX HUB] Game module error: " .. tostring(err))
-    pcall(function()
-        WindUI:Notify({
-            Title = "RVX HUB",
-            Content = "เกิดข้อผิดพลาดในการโหลดฟังก์ชันของแมพ",
-            Duration = 5,
-        })
-    end)
+if not okGame then
+    warn("[RVX Hub] Game module Init error: " .. tostring(gameError))
+
+    if WindUI then
+        pcall(function()
+            WindUI:Notify({
+                Title = "RVX Hub",
+                Content = "เกิดข้อผิดพลาดในการโหลดฟังก์ชันของแมพ",
+                Duration = 5,
+            })
+        end)
+    end
 end
