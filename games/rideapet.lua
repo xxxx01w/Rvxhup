@@ -1326,7 +1326,7 @@ function RideAPet.Init(Window, WindUI)
             if AutoPlaceEnabled and (not AutoCollectEnabled or isNearHomeForPlace()) then
                 processAutoPlaceOnce()
             end
-            task.wait(1.2
+            task.wait(1.2)
         end
     end)
 
@@ -1503,6 +1503,35 @@ function RideAPet.Init(Window, WindUI)
                 end
             end
             task.wait(0.5)
+        end
+    end)
+
+
+    -- ===== DEBUG (passive): log เหตุการณ์ไข่ลง console (F9) — ลบทิ้งได้ =====
+    task.spawn(function()
+        local function join(...)
+            local t = {}
+            for i = 1, select("#", ...) do t[i] = tostring((select(i, ...))) end
+            return table.concat(t, ", ")
+        end
+        local function log(...)
+            warn("[RideAPet][DEBUG] " .. join(...) .. string.format(" | collect=%s place=%s", tostring(AutoCollectEnabled), tostring(AutoPlaceEnabled)))
+        end
+        local function watchBasket(b)
+            b.ChildAdded:Connect(function(c) log("Basket +", c.Name) end)
+            b.ChildRemoved:Connect(function(c) log("Basket -", c.Name) end)
+        end
+        local b = LocalPlayer:FindFirstChild("Basket")
+        if b then watchBasket(b) end
+        LocalPlayer.ChildAdded:Connect(function(c)
+            if c.Name == "Basket" then log("Basket created") watchBasket(c) end
+        end)
+        if Remotes then
+            for _, r in ipairs(Remotes:GetDescendants()) do
+                if r:IsA("RemoteEvent") and r.Name ~= "PetCollect" then
+                    r.OnClientEvent:Connect(function(...) log("S->C", r.Name, join(...)) end)
+                end
+            end
         end
     end)
 
