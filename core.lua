@@ -735,10 +735,10 @@ function Core.Init(mapName)
                 panelColor = DEFAULTS.PanelBackground
             end
 
+            -- WindUI 1.6.63+ expects a numeric panel-background value here.
+            -- Keep the same visual behavior without passing a Color3 into the API.
             safeCall(function()
-                Window:SetPanelBackground(
-                    state and panelColor or Color3.fromRGB(10, 6, 15)
-                )
+                Window:SetPanelBackground(state and 0 or 1)
             end)
         end,
     })
