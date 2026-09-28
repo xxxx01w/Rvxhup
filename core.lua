@@ -1,499 +1,1245 @@
 --[[
-    RVX HUB - Core V4
-    Clean Pro Layout
-    Shared WindUI loader + centralized UI system.
+    RVX HUB - CORE V3
+    Centralized UI / Appearance / Controls / Config system
 
-    Layout:
-      Home
-      Game (current game features)
-      Tools
-      Settings (Appearance / Controls / Notifications / Performance / Config / System)
+    Main responsibilities:
+      • One WindUI instance for every RVX game module
+      • RVX Purple -> Pink visual identity
+      • Real LocalPlayer profile
+      • Home / Dashboard
+      • Appearance controls
+      • Keybind controls
+      • Notification controls
+      • Performance controls
+      • Config manager
+      • Module / game information
+      • Safe API wrappers so optional WindUI features do not hard-crash the hub
 
-    Game modules can keep using:
-        Module.Init(Window, WindUI)
+    Game modules should ONLY receive:
+        local Window, WindUI = Core.Init(mapName)
 
-    For modules that want their game section:
-        local GameSection = Window.RVXGameSection
-        local Tab = GameSection:Tab({...})
+    Then create their own game-specific tabs on Window.
 ]]
 
 local Core = {}
+
+-- ============================================================
+-- SERVICES
+-- ============================================================
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+
+local LocalPlayer = Players.LocalPlayer
+
+-- ============================================================
+-- WINDUI
+-- ============================================================
 
 local WindUI = loadstring(game:HttpGet(
     "https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"
 ))()
 
-local Players = game:GetService("Players")
-local UserInputService = game:GetService("UserInputService")
-local HttpService = game:GetService("HttpService")
-local RunService = game:GetService("RunService")
-local MarketplaceService = game:GetService("MarketplaceService")
+-- ============================================================
+-- RVX BRAND
+-- ============================================================
 
-local LocalPlayer = Players.LocalPlayer
+local RVX = {
+    Purple       = "#8B5CF6",
+    PurpleDark   = "#24103D",
+    PurpleDeep   = "#100914",
+    Pink         = "#FF3D9A",
+    PinkLight    = "#FF77BE",
+    Magenta      = "#D946EF",
 
-local CONFIG_FILE = "RVXHub_V4.json"
-
-local State = {
-    Theme = "RVX Purple Pink",
-    Transparency = 0.08,
-    Keybind = Enum.KeyCode.RightShift,
-    OpenButton = true,
-    Notifications = true,
-    PerformanceMode = false,
-    AutoSave = true,
+    ThemeAccent  = "#7C3AED",
+    ThemeDialog  = "#21132F",
+    ThemeOutline = "#F0B7FF",
+    ThemeText    = "#FFFFFF",
+    ThemeMuted   = "#BDA9CA",
+    ThemeBG      = "#100914",
+    ThemeButton  = "#9D3DDB",
+    ThemeIcon    = "#F09CFF",
 }
 
-local function safeRead()
-    if not isfile or not isfile(CONFIG_FILE) then
+local VERSION = "Core V3"
+
+-- ============================================================
+-- DEFAULTS
+-- ============================================================
+
+local DEFAULTS = {
+    Theme = "RVX Purple Pink",
+
+    Transparency = 0.08,
+    PanelBackground = true,
+
+    ToggleKey = "RightShift",
+
+    OpenButton = true,
+    OpenButtonScale = 0.50,
+
+    Notifications = true,
+    NotificationDuration = 3,
+
+    ReducedAnimation = false,
+    LowPerformanceMode = false,
+
+    CompactMode = false,
+}
+
+-- ============================================================
+-- STATE
+-- ============================================================
+
+local State = {
+    MapName = "RVX Hub",
+    Window = nil,
+
+    ConfigManager = nil,
+    Config = nil,
+
+    NotificationsEnabled = DEFAULTS.Notifications,
+    NotificationDuration = DEFAULTS.NotificationDuration,
+
+    ReducedAnimation = DEFAULTS.ReducedAnimation,
+    LowPerformanceMode = DEFAULTS.LowPerformanceMode,
+}
+
+-- ============================================================
+-- SAFE HELPERS
+-- ============================================================
+
+local function safeCall(callback, ...)
+    local ok, result = pcall(callback, ...)
+    if ok then
+        return true, result
+    end
+
+    warn("[RVX Hub Core] " .. tostring(result))
+    return false, nil
+end
+
+local function safeNotify(title, content, duration, icon)
+    if not State.NotificationsEnabled then
         return
     end
 
-    local ok, data = pcall(function()
-        return HttpService:JSONDecode(readfile(CONFIG_FILE))
-    end)
-
-    if ok and type(data) == "table" then
-        for k, v in pairs(data) do
-            if State[k] ~= nil then
-                State[k] = v
-            end
-        end
-    end
-end
-
-local function safeSave()
-    if not writefile then
-        return
-    end
-
-    pcall(function()
-        writefile(CONFIG_FILE, HttpService:JSONEncode(State))
-    end)
-end
-
-safeRead()
-
-local function getGameName()
-    local name = "Universal"
-
-    pcall(function()
-        local info = MarketplaceService:GetProductInfo(game.PlaceId)
-        if info and info.Name and info.Name ~= "" then
-            name = info.Name
-        end
-    end)
-
-    return name
-end
-
-local function notify(title, content, duration)
-    if not State.Notifications then
-        return
-    end
-
-    pcall(function()
+    safeCall(function()
         WindUI:Notify({
             Title = title,
             Content = content,
-            Duration = duration or 3,
+            Duration = duration or State.NotificationDuration or 3,
+            Icon = icon or "sparkles",
         })
     end)
 end
 
-local function refreshProfile()
-    if not LocalPlayer then
-        return
+local function isEnumKey(value)
+    return typeof(value) == "EnumItem" and value.EnumType == Enum.KeyCode
+end
+
+local function normalizeKey(value)
+    if isEnumKey(value) then
+        return value.Name
     end
 
-    -- WindUI handles the user display. This helper exists so modules/core
-    -- have one centralized place to refresh profile-related state.
-    return LocalPlayer.Name
+    local name = tostring(value or DEFAULTS.ToggleKey)
+
+    if Enum.KeyCode[name] then
+        return name
+    end
+
+    return DEFAULTS.ToggleKey
 end
 
-local function setTheme(name)
-    -- Store the preference without calling undocumented theme internals.
-    -- This keeps Core compatible with more WindUI releases.
-    State.Theme = name
+local function getPlayerDisplay()
+    if not LocalPlayer then
+        return "Player"
+    end
+
+    return LocalPlayer.DisplayName or LocalPlayer.Name
 end
+
+local function getPlayerUsername()
+    if not LocalPlayer then
+        return "Unknown"
+    end
+
+    return "@" .. tostring(LocalPlayer.Name)
+end
+
+local function getDeviceName()
+    if UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled then
+        return "Mobile"
+    end
+
+    if UserInputService.GamepadEnabled and not UserInputService.KeyboardEnabled then
+        return "Console"
+    end
+
+    return "PC"
+end
+
+local function getExecutorName()
+    local ok, executor = pcall(function()
+        if identifyexecutor then
+            return identifyexecutor()
+        end
+
+        return "Unknown"
+    end)
+
+    if ok and executor then
+        return tostring(executor)
+    end
+
+    return "Unknown"
+end
+
+-- ============================================================
+-- CUSTOM THEME
+-- ============================================================
+
+safeCall(function()
+    local themes = WindUI:GetThemes()
+
+    if not themes["RVX Purple Pink"] then
+        WindUI:AddTheme({
+            Name = "RVX Purple Pink",
+
+            Accent = RVX.ThemeAccent,
+            Dialog = RVX.ThemeDialog,
+            Outline = RVX.ThemeOutline,
+            Text = RVX.ThemeText,
+            Placeholder = RVX.ThemeMuted,
+            Background = RVX.ThemeBG,
+            Button = RVX.ThemeButton,
+            Icon = RVX.ThemeIcon,
+        })
+    end
+end)
+
+-- ============================================================
+-- CREATE WINDOW
+-- ============================================================
 
 function Core.Init(mapName)
-    mapName = mapName or getGameName()
+    mapName = mapName or "RVX Hub"
+
+    State.MapName = tostring(mapName)
+
+    -- Prevent accidental duplicate Core windows if Init is called twice.
+    if State.Window then
+        return State.Window, WindUI
+    end
+
+    -- --------------------------------------------------------
+    -- WINDOW
+    -- --------------------------------------------------------
 
     local Window = WindUI:CreateWindow({
-        Title = "RVX HUB",
-        Icon = "egg",
-        Author = mapName,
+        Title = "RVX Hub",
+
+        Icon = "sparkles",
+
+        Author = State.MapName,
+
         Folder = "RVXHub",
-        Size = UDim2.fromOffset(620, 480),
+
+        Size = UDim2.fromOffset(650, 520),
+
         Transparent = true,
+
+        Theme = DEFAULTS.Theme,
+
+        NewElements = true,
+
+        HideSearchBar = false,
+
+        OpenButton = {
+            Title = "Open RVX Hub",
+
+            CornerRadius = UDim.new(1, 0),
+
+            StrokeThickness = 2,
+
+            Enabled = DEFAULTS.OpenButton,
+
+            Draggable = true,
+
+            OnlyMobile = false,
+
+            Scale = DEFAULTS.OpenButtonScale,
+
+            Color = ColorSequence.new(
+                Color3.fromHex(RVX.Purple),
+                Color3.fromHex(RVX.Pink)
+            ),
+        },
+
+        -- WindUI uses the LocalPlayer for this profile.
+        -- Anonymous=false tells it to show the actual account.
         User = {
             Enabled = true,
             Anonymous = false,
-            Callback = function()
-                refreshProfile()
-            end,
         },
     })
 
-    -- ============================================================
-    -- THEME
-    -- ============================================================
-    -- Keep WindUI's built-in theme system here. Some WindUI releases
-    -- require internal theme fields (for example PanelBackground), so
-    -- injecting a partial custom theme can break CreateWindow.
-    -- The UI layout remains centralized.
+    if not Window then
+        error("[RVX Hub Core] Failed to create WindUI window")
+    end
 
-    -- ============================================================
-    -- SIDEBAR SECTIONS
-    -- ============================================================
+    State.Window = Window
+
+    -- --------------------------------------------------------
+    -- INITIAL WINDOW STATE
+    -- --------------------------------------------------------
+
+    safeCall(function()
+        WindUI:SetTheme(DEFAULTS.Theme)
+    end)
+
+    safeCall(function()
+        Window:SetBackgroundTransparency(DEFAULTS.Transparency)
+    end)
+
+    safeCall(function()
+        Window:SetBackgroundImageTransparency(DEFAULTS.Transparency)
+    end)
+
+    safeCall(function()
+        Window:SetPanelBackground(DEFAULTS.PanelBackground)
+    end)
+
+    safeCall(function()
+        Window:SetToggleKey(Enum.KeyCode[DEFAULTS.ToggleKey])
+    end)
+
+    safeCall(function()
+        Window:EditOpenButton({
+            Enabled = DEFAULTS.OpenButton,
+        })
+    end)
+
+    -- --------------------------------------------------------
+    -- BRAND TAGS
+    -- --------------------------------------------------------
+
+    safeCall(function()
+        Window:Tag({
+            Title = "RVX",
+            Radius = 8,
+
+            Color = WindUI:Gradient({
+                ["0"] = {
+                    Color = Color3.fromHex(RVX.Purple),
+                    Transparency = 0,
+                },
+
+                ["100"] = {
+                    Color = Color3.fromHex(RVX.Pink),
+                    Transparency = 0,
+                },
+            }, {
+                Rotation = 45,
+            }),
+        })
+    end)
+
+    safeCall(function()
+        Window:Tag({
+            Title = VERSION,
+            Radius = 8,
+            Color = Color3.fromHex(RVX.Magenta),
+        })
+    end)
+
+    -- ========================================================
+    -- SECTIONS
+    -- ========================================================
 
     local HomeSection = Window:Section({
-        Title = "🏠 Home",
+        Title = "RVX HUB",
         Opened = true,
-    })
-
-    local GameSection = Window:Section({
-        Title = "🎮 " .. tostring(mapName),
-        Opened = true,
-    })
-
-    local ToolsSection = Window:Section({
-        Title = "🧰 Tools",
-        Opened = false,
     })
 
     local SettingsSection = Window:Section({
-        Title = "⚙ Settings",
-        Opened = false,
+        Title = "SETTINGS",
+        Opened = true,
     })
 
-    -- Expose the current-game section to game modules.
-    Window.RVXGameSection = GameSection
-    Window.RVXHomeSection = HomeSection
-    Window.RVXToolsSection = ToolsSection
-    Window.RVXSettingsSection = SettingsSection
-    Window.RVXCoreState = State
-    Window.RVXNotify = notify
+    local UtilitiesSection = Window:Section({
+        Title = "UTILITIES",
+        Opened = true,
+    })
 
-    -- ============================================================
+    -- ========================================================
     -- HOME
-    -- ============================================================
+    -- ========================================================
 
     local HomeTab = HomeSection:Tab({
-        Title = "Dashboard",
+        Title = "Home",
         Icon = "house",
+        Desc = "RVX Hub dashboard",
     })
 
     HomeTab:Paragraph({
-        Title = "RVX HUB",
-        Desc = "Clean Pro interface",
+        Title = "Welcome to RVX Hub",
+        Desc =
+            "Welcome back, " ..
+            getPlayerDisplay() ..
+            "\\n" ..
+            getPlayerUsername() ..
+            "\\n\\n" ..
+            "Current Game: " ..
+            State.MapName,
+
+        Image = "sparkles",
+        ImageSize = 24,
+        Color = Color3.fromHex(RVX.Pink),
+    })
+
+    HomeTab:Section({
+        Title = "Session",
+        TextSize = 18,
     })
 
     HomeTab:Paragraph({
-        Title = "Current Game",
-        Desc = tostring(mapName),
+        Title = "Game",
+        Desc = State.MapName,
+        Image = "gamepad-2",
+        ImageSize = 20,
+        Color = Color3.fromHex(RVX.Purple),
     })
 
     HomeTab:Paragraph({
-        Title = "Status",
-        Desc = "Core loaded successfully.",
+        Title = "Player",
+        Desc =
+            getPlayerDisplay() ..
+            "\\n" ..
+            getPlayerUsername(),
+        Image = "user-round",
+        ImageSize = 20,
+        Color = Color3.fromHex(RVX.Pink),
+    })
+
+    HomeTab:Paragraph({
+        Title = "Device",
+        Desc = getDeviceName(),
+        Image = "monitor",
+        ImageSize = 20,
+        Color = Color3.fromHex(RVX.Magenta),
+    })
+
+    HomeTab:Paragraph({
+        Title = "Executor",
+        Desc = getExecutorName(),
+        Image = "cpu",
+        ImageSize = 20,
+        Color = Color3.fromHex(RVX.Purple),
+    })
+
+    HomeTab:Section({
+        Title = "RVX Status",
+        TextSize = 18,
+    })
+
+    HomeTab:Paragraph({
+        Title = "Core Status",
+        Desc =
+            "● Core Loaded\\n" ..
+            "● Shared WindUI Active\\n" ..
+            "● Game Module: " .. State.MapName,
+
+        Image = "activity",
+        ImageSize = 20,
+        Color = Color3.fromHex("#8AFFC1"),
     })
 
     HomeTab:Button({
-        Title = "Refresh Profile",
-        Desc = "Refresh the account display used by RVX HUB.",
+        Title = "Refresh Player Info",
+        Desc = "อัปเดตข้อมูลโปรไฟล์บนหน้า Home",
+        Icon = "refresh-cw",
+
         Callback = function()
-            refreshProfile()
-            notify("RVX HUB", "Profile refreshed.", 2)
-        end,
-    })
-
-    HomeTab:Button({
-        Title = "Copy Place ID",
-        Desc = tostring(game.PlaceId),
-        Callback = function()
-            if setclipboard then
-                setclipboard(tostring(game.PlaceId))
-                notify("RVX HUB", "Place ID copied.", 2)
-            end
-        end,
-    })
-
-    -- ============================================================
-    -- TOOLS
-    -- ============================================================
-
-    local ToolsTab = ToolsSection:Tab({
-        Title = "Utilities",
-        Icon = "wrench",
-    })
-
-    ToolsTab:Button({
-        Title = "Copy Job ID",
-        Desc = tostring(game.JobId),
-        Callback = function()
-            if setclipboard then
-                setclipboard(tostring(game.JobId))
-                notify("RVX HUB", "Job ID copied.", 2)
-            end
-        end,
-    })
-
-    ToolsTab:Button({
-        Title = "Copy Place ID",
-        Desc = tostring(game.PlaceId),
-        Callback = function()
-            if setclipboard then
-                setclipboard(tostring(game.PlaceId))
-                notify("RVX HUB", "Place ID copied.", 2)
-            end
-        end,
-    })
-
-    ToolsTab:Button({
-        Title = "Rejoin Server",
-        Desc = "Reconnect to the current experience.",
-        Callback = function()
-            local TeleportService = game:GetService("TeleportService")
-            pcall(function()
-                TeleportService:Teleport(game.PlaceId, LocalPlayer)
-            end)
-        end,
-    })
-
-    ToolsTab:Button({
-        Title = "Server Hop",
-        Desc = "Reserved for centralized server tools.",
-        Callback = function()
-            notify("RVX HUB", "Server Hop is not configured yet.", 3)
-        end,
-    })
-
-    -- ============================================================
-    -- SETTINGS
-    -- All shared UI controls are grouped here.
-    -- ============================================================
-
-    local AppearanceTab = SettingsSection:Tab({
-        Title = "Appearance",
-        Icon = "palette",
-    })
-
-    AppearanceTab:Dropdown({
-        Title = "Theme",
-        Values = {
-            "RVX Purple Pink",
-            "Dark",
-            "Light",
-        },
-        Value = State.Theme,
-        Callback = function(value)
-            setTheme(value)
-            notify("Appearance", "Theme changed to " .. tostring(value), 2)
-        end,
-    })
-
-    AppearanceTab:Slider({
-        Title = "Transparency",
-        Desc = "Adjust the shared UI transparency preference.",
-        Value = {
-            Min = 0,
-            Max = 0.35,
-            Default = State.Transparency,
-        },
-        Step = 0.01,
-        Callback = function(value)
-            State.Transparency = value
-        end,
-    })
-
-    AppearanceTab:Toggle({
-        Title = "Floating Open Button",
-        Desc = "Show or hide the floating UI button.",
-        Value = State.OpenButton,
-        Callback = function(value)
-            State.OpenButton = value
-            pcall(function()
-                if Window.SetToggleKey then
-                    -- Keep WindUI's own toggle behavior intact.
-                end
-            end)
-        end,
-    })
-
-    local ControlsTab = SettingsSection:Tab({
-        Title = "Controls",
-        Icon = "keyboard",
-    })
-
-    ControlsTab:Keybind({
-        Title = "Toggle UI",
-        Desc = "Press a key to open or hide RVX HUB.",
-        Value = State.Keybind,
-        Callback = function(value)
-            State.Keybind = value
-        end,
-    })
-
-    ControlsTab:Paragraph({
-        Title = "Recommended",
-        Desc = "RightShift is the default PC toggle key.",
-    })
-
-    local NotificationsTab = SettingsSection:Tab({
-        Title = "Notifications",
-        Icon = "bell",
-    })
-
-    NotificationsTab:Toggle({
-        Title = "Enable Notifications",
-        Desc = "Allow RVX HUB status notifications.",
-        Value = State.Notifications,
-        Callback = function(value)
-            State.Notifications = value
-        end,
-    })
-
-    NotificationsTab:Button({
-        Title = "Test Notification",
-        Desc = "Preview the RVX notification style.",
-        Callback = function()
-            notify("RVX HUB", "Notification system is working.", 3)
-        end,
-    })
-
-    local PerformanceTab = SettingsSection:Tab({
-        Title = "Performance",
-        Icon = "gauge",
-    })
-
-    PerformanceTab:Toggle({
-        Title = "Performance Mode",
-        Desc = "Lets game modules read a shared low-load preference.",
-        Value = State.PerformanceMode,
-        Callback = function(value)
-            State.PerformanceMode = value
-            notify(
-                "Performance",
-                value and "Performance mode enabled." or "Performance mode disabled.",
-                2
+            safeNotify(
+                "RVX Hub",
+                getPlayerDisplay() .. " • " .. getPlayerUsername(),
+                3,
+                "user-round"
             )
         end,
     })
 
-    PerformanceTab:Paragraph({
-        Title = "Shared State",
-        Desc = "Game modules can read Window.RVXCoreState.PerformanceMode.",
+    -- ========================================================
+    -- APPEARANCE
+    -- ========================================================
+
+    local AppearanceTab = SettingsSection:Tab({
+        Title = "Appearance",
+        Icon = "palette",
+        Desc = "ปรับหน้าตา RVX Hub",
     })
 
-    local ConfigTab = SettingsSection:Tab({
-        Title = "Config",
-        Icon = "save",
+    AppearanceTab:Paragraph({
+        Title = "RVX Purple Pink",
+        Desc = "เอกลักษณ์หลักของ RVX Hub • Purple → Pink",
+        Image = "palette",
+        ImageSize = 22,
+        Color = Color3.fromHex(RVX.Pink),
     })
 
-    ConfigTab:Toggle({
-        Title = "Auto Save",
-        Desc = "Save shared RVX HUB settings when possible.",
-        Value = State.AutoSave,
-        Callback = function(value)
-            State.AutoSave = value
-        end,
+    AppearanceTab:Section({
+        Title = "Theme",
+        TextSize = 18,
     })
 
-    ConfigTab:Button({
-        Title = "Save Settings",
-        Desc = "Save RVX HUB settings locally.",
-        Callback = function()
-            safeSave()
-            notify("Config", "Settings saved.", 2)
-        end,
-    })
+    local themeNames = {}
 
-    ConfigTab:Button({
-        Title = "Reset Settings",
-        Desc = "Restore the shared UI defaults.",
-        Callback = function()
-            State.Theme = "RVX Purple Pink"
-            State.Transparency = 0.08
-            State.Keybind = Enum.KeyCode.RightShift
-            State.OpenButton = true
-            State.Notifications = true
-            State.PerformanceMode = false
-            State.AutoSave = true
-
-            pcall(function()
-                setTheme(State.Theme)
-            end)
-
-            notify("Config", "Shared settings reset.", 2)
-        end,
-    })
-
-    local SystemTab = SettingsSection:Tab({
-        Title = "System",
-        Icon = "info",
-    })
-
-    SystemTab:Paragraph({
-        Title = "RVX HUB Core V4",
-        Desc = "Centralized UI system with grouped navigation.",
-    })
-
-    SystemTab:Paragraph({
-        Title = "Game",
-        Desc = tostring(mapName),
-    })
-
-    SystemTab:Paragraph({
-        Title = "Place ID",
-        Desc = tostring(game.PlaceId),
-    })
-
-    SystemTab:Paragraph({
-        Title = "Job ID",
-        Desc = tostring(game.JobId),
-    })
-
-    -- ============================================================
-    -- KEY TOGGLE
-    -- ============================================================
-
-    local toggleConnection
-    toggleConnection = UserInputService.InputBegan:Connect(function(input, processed)
-        if processed then
-            return
-        end
-
-        if input.KeyCode == State.Keybind then
-            pcall(function()
-                if Window.Toggle then
-                    Window:Toggle()
-                elseif Window.ToggleUI then
-                    Window:ToggleUI()
-                end
-            end)
+    safeCall(function()
+        for themeName in pairs(WindUI:GetThemes()) do
+            table.insert(themeNames, themeName)
         end
     end)
 
-    -- Keep connections tied to the window lifetime where possible.
-    Window.RVXToggleConnection = toggleConnection
+    table.sort(themeNames)
 
-    -- ============================================================
-    -- AUTO SAVE
-    -- ============================================================
+    local ThemeDropdown = AppearanceTab:Dropdown({
+        Title = "Theme",
+        Desc = "เลือกธีมของ WindUI",
+        Values = themeNames,
+        Value = DEFAULTS.Theme,
+        SearchBarEnabled = true,
+        Flag = "RVX_THEME",
 
-    if State.AutoSave then
-        task.spawn(function()
-            while Window and State.AutoSave do
-                task.wait(30)
-                if State.AutoSave then
-                    safeSave()
-                end
+        Callback = function(theme)
+            if type(theme) ~= "string" then
+                return
             end
+
+            safeCall(function()
+                WindUI:SetTheme(theme)
+            end)
+
+            safeNotify(
+                "Theme Changed",
+                "ใช้ธีม: " .. theme,
+                2,
+                "palette"
+            )
+        end,
+    })
+
+    AppearanceTab:Slider({
+        Title = "UI Transparency",
+        Desc = "ปรับความโปร่งใสของหน้าต่าง",
+        Step = 0.05,
+
+        Value = {
+            Min = 0,
+            Max = 0.50,
+            Default = DEFAULTS.Transparency,
+        },
+
+        Flag = "RVX_TRANSPARENCY",
+
+        Callback = function(value)
+            local transparency = tonumber(value)
+
+            if not transparency then
+                return
+            end
+
+            safeCall(function()
+                Window:SetBackgroundTransparency(transparency)
+            end)
+
+            safeCall(function()
+                Window:SetBackgroundImageTransparency(transparency)
+            end)
+        end,
+    })
+
+    AppearanceTab:Toggle({
+        Title = "Panel Background",
+        Desc = "แสดงพื้นหลังของ Panel",
+        Value = DEFAULTS.PanelBackground,
+        Flag = "RVX_PANEL_BACKGROUND",
+
+        Callback = function(state)
+            safeCall(function()
+                Window:SetPanelBackground(state)
+            end)
+        end,
+    })
+
+    AppearanceTab:Toggle({
+        Title = "Compact Mode",
+        Desc = "โหมด UI กระชับสำหรับจอเล็ก",
+        Value = DEFAULTS.CompactMode,
+        Flag = "RVX_COMPACT",
+
+        Callback = function(state)
+            -- Kept as a preference flag for future centralized layout work.
+            -- Game modules do not need to know about this setting.
+            safeNotify(
+                "Compact Mode",
+                state and "เปิดโหมดกระชับ" or "ปิดโหมดกระชับ",
+                2,
+                "layout-dashboard"
+            )
+        end,
+    })
+
+    -- ========================================================
+    -- CONTROLS
+    -- ========================================================
+
+    local ControlsTab = SettingsSection:Tab({
+        Title = "Controls",
+        Icon = "keyboard",
+        Desc = "ปุ่มลัดและการควบคุม UI",
+    })
+
+    ControlsTab:Paragraph({
+        Title = "UI Toggle",
+        Desc = "ตั้งปุ่มบนคอมสำหรับเปิด / ปิด RVX Hub",
+        Image = "keyboard",
+        ImageSize = 22,
+        Color = Color3.fromHex(RVX.Purple),
+    })
+
+    local ToggleKeyElement = ControlsTab:Keybind({
+        Title = "Toggle UI Key",
+        Desc = "กดปุ่มที่ต้องการเพื่อตั้ง Shortcut",
+        Value = DEFAULTS.ToggleKey,
+        Flag = "RVX_TOGGLE_KEY",
+
+        Callback = function(value)
+            local keyName = normalizeKey(value)
+            local keyCode = Enum.KeyCode[keyName]
+
+            if not keyCode then
+                keyName = DEFAULTS.ToggleKey
+                keyCode = Enum.KeyCode[keyName]
+            end
+
+            safeCall(function()
+                Window:SetToggleKey(keyCode)
+            end)
+
+            safeNotify(
+                "Shortcut Updated",
+                "ปุ่มเปิด/ปิด UI: " .. keyName,
+                2,
+                "keyboard"
+            )
+        end,
+    })
+
+    ControlsTab:Toggle({
+        Title = "Floating Open Button",
+        Desc = "แสดงปุ่มลอยสำหรับเปิด UI",
+        Value = DEFAULTS.OpenButton,
+        Flag = "RVX_OPEN_BUTTON",
+
+        Callback = function(state)
+            safeCall(function()
+                Window:EditOpenButton({
+                    Enabled = state,
+                })
+            end)
+        end,
+    })
+
+    ControlsTab:Slider({
+        Title = "Open Button Size",
+        Desc = "ปรับขนาดปุ่มลอย",
+        Step = 0.05,
+
+        Value = {
+            Min = 0.35,
+            Max = 0.80,
+            Default = DEFAULTS.OpenButtonScale,
+        },
+
+        Flag = "RVX_OPEN_BUTTON_SCALE",
+
+        Callback = function(value)
+            local scale = tonumber(value)
+
+            if not scale then
+                return
+            end
+
+            safeCall(function()
+                Window:EditOpenButton({
+                    Scale = scale,
+                })
+            end)
+        end,
+    })
+
+    ControlsTab:Button({
+        Title = "Reset Shortcut",
+        Desc = "กลับไปใช้ RightShift",
+        Icon = "rotate-ccw",
+
+        Callback = function()
+            safeCall(function()
+                Window:SetToggleKey(Enum.KeyCode.RightShift)
+            end)
+
+            safeCall(function()
+                ToggleKeyElement:Set("RightShift")
+            end)
+
+            safeNotify(
+                "Shortcut Reset",
+                "กลับไปใช้ RightShift แล้ว",
+                2,
+                "keyboard"
+            )
+        end,
+    })
+
+    -- ========================================================
+    -- NOTIFICATIONS
+    -- ========================================================
+
+    local NotificationTab = SettingsSection:Tab({
+        Title = "Notifications",
+        Icon = "bell",
+        Desc = "ตั้งค่าการแจ้งเตือน",
+    })
+
+    NotificationTab:Toggle({
+        Title = "Enable Notifications",
+        Desc = "เปิด/ปิดข้อความแจ้งเตือนจาก RVX Core",
+        Value = DEFAULTS.Notifications,
+        Flag = "RVX_NOTIFICATIONS",
+
+        Callback = function(state)
+            State.NotificationsEnabled = state
+
+            if state then
+                safeNotify(
+                    "Notifications",
+                    "เปิดการแจ้งเตือนแล้ว",
+                    2,
+                    "bell"
+                )
+            end
+        end,
+    })
+
+    NotificationTab:Slider({
+        Title = "Notification Duration",
+        Desc = "ระยะเวลาแสดง Notification",
+        Step = 0.5,
+
+        Value = {
+            Min = 1,
+            Max = 8,
+            Default = DEFAULTS.NotificationDuration,
+        },
+
+        Flag = "RVX_NOTIFICATION_DURATION",
+
+        Callback = function(value)
+            State.NotificationDuration = tonumber(value) or 3
+        end,
+    })
+
+    NotificationTab:Button({
+        Title = "Test Notification",
+        Desc = "ทดสอบรูปแบบ Notification",
+        Icon = "bell-ring",
+
+        Callback = function()
+            safeNotify(
+                "RVX Hub",
+                "ระบบแจ้งเตือนทำงานปกติ",
+                State.NotificationDuration,
+                "sparkles"
+            )
+        end,
+    })
+
+    -- ========================================================
+    -- PERFORMANCE
+    -- ========================================================
+
+    local PerformanceTab = SettingsSection:Tab({
+        Title = "Performance",
+        Icon = "gauge",
+        Desc = "ตั้งค่าการใช้ทรัพยากรของ UI",
+    })
+
+    PerformanceTab:Paragraph({
+        Title = "Performance Mode",
+        Desc =
+            "การตั้งค่านี้ควบคุมเฉพาะ UI Core\\n" ..
+            "ไม่แก้ระบบฟีเจอร์ของแต่ละเกม",
+
+        Image = "gauge",
+        ImageSize = 22,
+        Color = Color3.fromHex(RVX.Purple),
+    })
+
+    PerformanceTab:Toggle({
+        Title = "Reduced Animation",
+        Desc = "ลดเอฟเฟกต์เคลื่อนไหวของ UI",
+        Value = DEFAULTS.ReducedAnimation,
+        Flag = "RVX_REDUCED_ANIMATION",
+
+        Callback = function(state)
+            State.ReducedAnimation = state
+
+            safeNotify(
+                "Performance",
+                state and "ลด Animation แล้ว" or "เปิด Animation ตามปกติ",
+                2,
+                "gauge"
+            )
+        end,
+    })
+
+    PerformanceTab:Toggle({
+        Title = "Low Performance Mode",
+        Desc = "โหมดประหยัดสำหรับเครื่องที่ต้องการลดภาระ UI",
+        Value = DEFAULTS.LowPerformanceMode,
+        Flag = "RVX_LOW_PERFORMANCE",
+
+        Callback = function(state)
+            State.LowPerformanceMode = state
+
+            if state then
+                State.ReducedAnimation = true
+            end
+
+            safeNotify(
+                "Performance Mode",
+                state and "เปิด Low Performance Mode" or "ปิด Low Performance Mode",
+                2,
+                "cpu"
+            )
+        end,
+    })
+
+    PerformanceTab:Button({
+        Title = "Performance Status",
+        Desc = "ดูสถานะของ Core",
+        Icon = "activity",
+
+        Callback = function()
+            safeNotify(
+                "RVX Performance",
+                "Device: " .. getDeviceName() ..
+                "\\nExecutor: " .. getExecutorName() ..
+                "\\nReduced Animation: " .. tostring(State.ReducedAnimation) ..
+                "\\nLow Performance: " .. tostring(State.LowPerformanceMode),
+                4,
+                "activity"
+            )
+        end,
+    })
+
+    -- ========================================================
+    -- CONFIGURATION
+    -- ========================================================
+
+    local ConfigTab = UtilitiesSection:Tab({
+        Title = "Config",
+        Icon = "save",
+        Desc = "บันทึกและโหลดการตั้งค่า",
+    })
+
+    ConfigTab:Paragraph({
+        Title = "RVX Configuration",
+        Desc =
+            "WindUI Config Manager จะเก็บค่าของ Elements ที่มี Flag\\n" ..
+            "เช่น Theme, Transparency, Keybind และ Toggle",
+
+        Image = "save",
+        ImageSize = 22,
+        Color = Color3.fromHex(RVX.Pink),
+    })
+
+    local ConfigManager = Window.ConfigManager
+
+    if ConfigManager then
+        State.ConfigManager = ConfigManager
+
+        safeCall(function()
+            ConfigManager:Init(Window)
         end)
+
+        local configName = "RVX_UI"
+
+        local ConfigNameInput = ConfigTab:Input({
+            Title = "Config Name",
+            Desc = "ชื่อไฟล์ Config",
+            Value = configName,
+            Placeholder = "RVX_UI",
+            Flag = "RVX_CONFIG_NAME",
+
+            Callback = function(value)
+                if value and tostring(value) ~= "" then
+                    configName = tostring(value)
+                end
+            end,
+        })
+
+        local function getConfigs()
+            local result = {}
+
+            safeCall(function()
+                result = ConfigManager:AllConfigs()
+            end)
+
+            return result or {}
+        end
+
+        local ConfigDropdown = ConfigTab:Dropdown({
+            Title = "Saved Configs",
+            Desc = "เลือก Config ที่มีอยู่",
+            Values = getConfigs(),
+            SearchBarEnabled = true,
+
+            Callback = function(value)
+                if value then
+                    configName = tostring(value)
+
+                    safeCall(function()
+                        ConfigNameInput:Set(configName)
+                    end)
+                end
+            end,
+        })
+
+        ConfigTab:Button({
+            Title = "Save Config",
+            Desc = "บันทึกค่าการตั้งค่า UI ปัจจุบัน",
+            Icon = "save",
+
+            Callback = function()
+                if configName == "" then
+                    configName = "RVX_UI"
+                end
+
+                local config
+
+                local ok = pcall(function()
+                    config = ConfigManager:CreateConfig(configName)
+                end)
+
+                if not ok or not config then
+                    safeNotify(
+                        "Config Error",
+                        "ไม่สามารถสร้าง Config ได้",
+                        3,
+                        "circle-alert"
+                    )
+                    return
+                end
+
+                local saved = false
+
+                pcall(function()
+                    saved = config:Save() == true
+                end)
+
+                if saved then
+                    safeNotify(
+                        "Config Saved",
+                        "บันทึก: " .. configName,
+                        3,
+                        "check"
+                    )
+
+                    safeCall(function()
+                        ConfigDropdown:Refresh(ConfigManager:AllConfigs())
+                    end)
+                else
+                    safeNotify(
+                        "Config Error",
+                        "บันทึก Config ไม่สำเร็จ",
+                        3,
+                        "circle-alert"
+                    )
+                end
+            end,
+        })
+
+        ConfigTab:Button({
+            Title = "Load Config",
+            Desc = "โหลดค่าการตั้งค่าที่บันทึกไว้",
+            Icon = "folder-open",
+
+            Callback = function()
+                if configName == "" then
+                    configName = "RVX_UI"
+                end
+
+                local config
+
+                local ok = pcall(function()
+                    config = ConfigManager:CreateConfig(configName)
+                end)
+
+                if not ok or not config then
+                    safeNotify(
+                        "Config Error",
+                        "ไม่สามารถเปิด Config ได้",
+                        3,
+                        "circle-alert"
+                    )
+                    return
+                end
+
+                local loaded = false
+
+                pcall(function()
+                    loaded = config:Load() == true
+                end)
+
+                if loaded then
+                    State.Config = config
+
+                    safeNotify(
+                        "Config Loaded",
+                        "โหลด: " .. configName,
+                        3,
+                        "refresh-cw"
+                    )
+                else
+                    safeNotify(
+                        "Config Error",
+                        "ไม่พบหรือโหลด Config ไม่สำเร็จ",
+                        3,
+                        "circle-alert"
+                    )
+                end
+            end,
+        })
+
+        ConfigTab:Button({
+            Title = "Refresh Config List",
+            Desc = "อัปเดตรายการ Config",
+            Icon = "refresh-cw",
+
+            Callback = function()
+                safeCall(function()
+                    ConfigDropdown:Refresh(ConfigManager:AllConfigs())
+                end)
+
+                safeNotify(
+                    "Config",
+                    "อัปเดตรายการแล้ว",
+                    2,
+                    "refresh-cw"
+                )
+            end,
+        })
+
+        State.Config = ConfigManager:CreateConfig("RVX_UI", true)
+    else
+        ConfigTab:Paragraph({
+            Title = "Config Manager Unavailable",
+            Desc =
+                "WindUI Config Manager ใช้งานไม่ได้ในสภาพแวดล้อมนี้\\n" ..
+                "ส่วน UI อื่นยังทำงานตามปกติ",
+
+            Image = "circle-alert",
+            ImageSize = 22,
+            Color = Color3.fromHex("#FFB4B4"),
+        })
     end
 
-    notify("RVX HUB", tostring(mapName) .. " loaded.", 3)
+    -- ========================================================
+    -- MODULE / SYSTEM INFO
+    -- ========================================================
+
+    local InfoTab = UtilitiesSection:Tab({
+        Title = "System",
+        Icon = "info",
+        Desc = "ข้อมูล RVX Hub",
+    })
+
+    InfoTab:Paragraph({
+        Title = "RVX Hub Core",
+        Desc =
+            VERSION ..
+            "\\nGame: " .. State.MapName ..
+            "\\nPlayer: " .. getPlayerDisplay() ..
+            "\\nDevice: " .. getDeviceName() ..
+            "\\nExecutor: " .. getExecutorName(),
+
+        Image = "info",
+        ImageSize = 22,
+        Color = Color3.fromHex(RVX.Pink),
+    })
+
+    InfoTab:Button({
+        Title = "Copy Game Job ID",
+        Desc = "คัดลอก JobId ของ Server",
+        Icon = "copy",
+
+        Callback = function()
+            local copied = false
+
+            pcall(function()
+                if setclipboard then
+                    setclipboard(game.JobId)
+                    copied = true
+                end
+            end)
+
+            if copied then
+                safeNotify(
+                    "Copied",
+                    "คัดลอก Job ID แล้ว",
+                    2,
+                    "copy"
+                )
+            else
+                safeNotify(
+                    "Clipboard",
+                    "Executor นี้ไม่รองรับ setclipboard",
+                    3,
+                    "circle-alert"
+                )
+            end
+        end,
+    })
+
+    InfoTab:Button({
+        Title = "Copy Place ID",
+        Desc = "คัดลอก PlaceId ของเกม",
+        Icon = "copy",
+
+        Callback = function()
+            local copied = false
+
+            pcall(function()
+                if setclipboard then
+                    setclipboard(tostring(game.PlaceId))
+                    copied = true
+                end
+            end)
+
+            if copied then
+                safeNotify(
+                    "Copied",
+                    "Place ID: " .. tostring(game.PlaceId),
+                    2,
+                    "copy"
+                )
+            else
+                safeNotify(
+                    "Clipboard",
+                    "Executor นี้ไม่รองรับ setclipboard",
+                    3,
+                    "circle-alert"
+                )
+            end
+        end,
+    })
+
+    InfoTab:Button({
+        Title = "Reset UI",
+        Desc = "คืนค่าหน้าตาและปุ่มลัดเป็นค่าเริ่มต้น",
+        Icon = "rotate-ccw",
+
+        Callback = function()
+            safeCall(function()
+                WindUI:SetTheme(DEFAULTS.Theme)
+            end)
+
+            safeCall(function()
+                Window:SetBackgroundTransparency(DEFAULTS.Transparency)
+            end)
+
+            safeCall(function()
+                Window:SetBackgroundImageTransparency(DEFAULTS.Transparency)
+            end)
+
+            safeCall(function()
+                Window:SetPanelBackground(DEFAULTS.PanelBackground)
+            end)
+
+            safeCall(function()
+                Window:SetToggleKey(Enum.KeyCode.RightShift)
+            end)
+
+            safeCall(function()
+                Window:EditOpenButton({
+                    Enabled = DEFAULTS.OpenButton,
+                    Scale = DEFAULTS.OpenButtonScale,
+                })
+            end)
+
+            safeCall(function()
+                ThemeDropdown:Select(DEFAULTS.Theme)
+            end)
+
+            safeCall(function()
+                ToggleKeyElement:Set(DEFAULTS.ToggleKey)
+            end)
+
+            safeNotify(
+                "RVX Hub",
+                "คืนค่าการตั้งค่า UI แล้ว",
+                3,
+                "rotate-ccw"
+            )
+        end,
+    })
+
+    -- ========================================================
+    -- PROFILE REFRESH
+    -- ========================================================
+
+    -- WindUI handles the actual LocalPlayer profile when
+    -- Anonymous=false. This refresh is intentionally delayed
+    -- slightly so the Roblox client has time to finish loading.
+    task.spawn(function()
+        task.wait(1)
+
+        safeCall(function()
+            if Window.User and Window.User.SetAnonymous then
+                Window.User:SetAnonymous(false)
+            end
+        end)
+    end)
+
+    -- ========================================================
+    -- AUTOSAVE ON CLOSE
+    -- ========================================================
+
+    safeCall(function()
+        Window:OnClose(function()
+            if State.Config and State.Config.Save then
+                pcall(function()
+                    State.Config:Save()
+                end)
+            end
+        end)
+    end)
+
+    -- ========================================================
+    -- FINAL
+    -- ========================================================
+
+    safeNotify(
+        "RVX Hub",
+        "Loaded • " .. State.MapName,
+        3,
+        "sparkles"
+    )
 
     return Window, WindUI
 end
