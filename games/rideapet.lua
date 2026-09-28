@@ -367,6 +367,37 @@ function RideAPet.Init(Window, WindUI)
     local AutoPlaceBlockedEggs = {}
     local MyPlotCFrame = nil
 
+    -- กันไข่ใบเดิมถูกหยิบซ้ำทันที หากเซิร์ฟเวอร์สร้าง/คืน Model เดิมกลับมา
+    -- เก็บตำแหน่ง+ชื่อไว้ชั่วคราวแทนการเชื่อ Model เพราะ Model อาจถูกสร้างใหม่
+    local RecentlyCollectedEggs = {}
+    local RECENT_EGG_COOLDOWN = 12
+
+    local function eggRecentlyCollected(item, eggName)
+        local part = item and (item:FindFirstChildWhichIsA("BasePart", true) or item.PrimaryPart)
+        if not part then return false end
+        local pos = part.Position
+        local now = tick()
+        for i = #RecentlyCollectedEggs, 1, -1 do
+            local rec = RecentlyCollectedEggs[i]
+            if now - rec.time > RECENT_EGG_COOLDOWN then
+                table.remove(RecentlyCollectedEggs, i)
+            elseif rec.name == eggName and (rec.pos - pos).Magnitude <= 6 then
+                return true
+            end
+        end
+        return false
+    end
+
+    local function rememberCollectedEgg(item, eggName)
+        local part = item and (item:FindFirstChildWhichIsA("BasePart", true) or item.PrimaryPart)
+        if not part then return end
+        table.insert(RecentlyCollectedEggs, {
+            name = eggName,
+            pos = part.Position,
+            time = tick(),
+        })
+    end
+
 
     -- ซ่อนเฉพาะข้อความแจ้งเตือน "Your Egg Was Returned" ถ้าเกมสร้างขึ้นมา
     -- (เป็นการซ่อน UI เท่านั้น ไม่ได้เปลี่ยนผลลัพธ์ที่เซิร์ฟเวอร์ตรวจสอบ)
@@ -501,7 +532,7 @@ function RideAPet.Init(Window, WindUI)
                 local prompt = findPickupPrompt(item)
                 if prompt and prompt.Parent then
                     local eggName = eggModelName(item)
-                    if isSelected(SelectedEggTypes, eggName) then
+                    if isSelected(SelectedEggTypes, eggName) and not eggRecentlyCollected(item, eggName) then
                         local info = lookupEggInfo(eggName)
                         table.insert(eggList, {
                             model = item,
@@ -1100,6 +1131,10 @@ function RideAPet.Init(Window, WindUI)
             local b = LocalPlayer:FindFirstChild("Basket")
             local basketLeft = b and #b:GetChildren() or 0
             collected = basketLeft == 0
+            if collected then
+                -- จำตำแหน่งไข่ที่เพิ่งเก็บ เพื่อไม่ให้รอบถัดไปวิ่งกลับไปหาไข่ที่เซิร์ฟเวอร์คืน/สร้างซ้ำทันที
+                rememberCollectedEgg(model, eggData.name)
+            end
             warn(string.format(
                 "[RideAPet] %s | signal=%s uuid=%s hold=%s basketLeft=%d onPlot=%s carry=%.2fs",
                 eggData.name, tostring(signal), tostring(uuid ~= nil),
