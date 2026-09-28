@@ -971,9 +971,9 @@ function RideAPet.Init(Window, WindUI)
 
     -- ตั้งค่าจังหวะเวลา — ใช้ Teleport ไปเก็บและ Teleport กลับ
     local Settings = {
-        ArriveDelay = 0.4,  -- รอหลังวาปถึงไข่ ก่อนกดเก็บ
-        SettleDelay = 1.2,  -- รอหลังเก็บได้ ให้เซิร์ฟเวอร์ยืนยันก่อนวาปกลับ
-        BaseDelay = 0.5,    -- รอหลังวาปถึงฐาน ก่อนฝากไข่
+        ArriveDelay = 0.05, -- รอหลังวาปถึงไข่ ก่อนกดเก็บ
+        SettleDelay = 0.1,  -- รอหลังเก็บได้ ให้เซิร์ฟเวอร์ยืนยันก่อนวาปกลับ
+        BaseDelay = 0.1,    -- รอหลังวาปถึงฐาน ก่อนฝากไข่
     }
 
     local function processEggCollection(eggData)
@@ -1030,31 +1030,45 @@ function RideAPet.Init(Window, WindUI)
 
         local pickupOk = false
         local pickupTime = 0
-        local deadline = tick() + 2.5
         local attempt = 0
-        while tick() < deadline and not pickupOk do
-            attempt = attempt + 1
+
+        -- ส่งคำสั่งเก็บแบบจำกัดครั้ง แล้วรอให้ Basket/Tool ยืนยันจริง
+        -- ไม่ใช้ Model หายเป็นหลักฐานสำเร็จ เพราะเซิร์ฟเวอร์อาจคืนไข่ทีหลัง
+        for try = 1, 2 do
+            attempt = try
             if prompt and prompt.Parent and prompt.Enabled then
-                if attempt == 1 then
-                    triggerPrompt(prompt, 0.05)
-                else
-                    -- รอบถัดไปจำลองการกดค้างตาม HoldDuration จริงของ prompt
-                    pcall(function()
-                        prompt:InputHoldBegin()
-                        task.wait((prompt.HoldDuration or 0) + 0.08)
-                        prompt:InputHoldEnd()
-                    end)
-                end
+                triggerPrompt(prompt, 0.05)
             end
-            -- remote รับ UUID ของไข่ (ไม่ใช่ Model)
             if EggPickupRemote and uuid then
                 pcall(function() EggPickupRemote:FireServer(uuid) end)
             end
-            task.wait(0.15)
-            if acquired() then
-                pickupOk = true
-                pickupTime = tick()
+
+            local confirmUntil = tick() + 0.9
+            while tick() < confirmUntil do
+                local b = LocalPlayer:FindFirstChild("Basket")
+                if b and #b:GetChildren() > prevBasketCount then
+                    signal = "basket"
+                    pickupOk = true
+                    break
+                end
+                local c = LocalPlayer.Character
+                if c then
+                    for _, it in ipairs(c:GetChildren()) do
+                        if isEggTool(it) then
+                            signal = "tool"
+                            pickupOk = true
+                            break
+                        end
+                    end
+                end
+                if pickupOk then break end
+                task.wait(0.05)
             end
+            if pickupOk then
+                pickupTime = tick()
+                break
+            end
+            task.wait(0.1)
         end
 
         local collected = false
@@ -1145,29 +1159,6 @@ function RideAPet.Init(Window, WindUI)
         end,
     })
 
-    secFarm:Slider({
-        Title = "หน่วงหลังวาปถึงไข่ (วินาที)",
-        Desc = "รอก่อนกดเก็บ ให้เซิร์ฟเวอร์รับตำแหน่งใหม่",
-        Step = 0.05,
-        Value = { Min = 0.05, Max = 1.5, Default = Settings.ArriveDelay },
-        Callback = function(v) Settings.ArriveDelay = tonumber(v) or Settings.ArriveDelay end,
-    })
-
-    secFarm:Slider({
-        Title = "หน่วงก่อนวาปกลับ (วินาที)",
-        Desc = "รอหลังเก็บได้ ก่อนวาปกลับ เพื่อให้เซิร์ฟเวอร์ยืนยันไข่",
-        Step = 0.05,
-        Value = { Min = 0.1, Max = 4, Default = Settings.SettleDelay },
-        Callback = function(v) Settings.SettleDelay = tonumber(v) or Settings.SettleDelay end,
-    })
-
-    secFarm:Slider({
-        Title = "หน่วงหลังวาปถึงฐาน (วินาที)",
-        Desc = "รอหลังวาปกลับถึงแปลง ก่อนฝากไข่",
-        Step = 0.05,
-        Value = { Min = 0.1, Max = 2, Default = Settings.BaseDelay },
-        Callback = function(v) Settings.BaseDelay = tonumber(v) or Settings.BaseDelay end,
-    })
 
     secFarm:Button({
         Title = "บันทึกจุดรังไข่ในแปลง (Set Home)",
