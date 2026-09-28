@@ -20,7 +20,6 @@ function RideAPet.Init(Window, WindUI)
     local HttpService = game:GetService("HttpService")
 
     local LocalPlayer = Players.LocalPlayer
-    local Character = LocalPlayer.Character
 
     -- ===== ระบบจดจำการตั้งค่า (Auto Save Config) =====
     local CONFIG_FILE = "RVXHub_RideAPetConfig.json"
@@ -393,10 +392,8 @@ function RideAPet.Init(Window, WindUI)
         })
     end
 
-    local lastPauseScan = 0
     RunService.RenderStepped:Connect(function()
-        if AutoCollectEnabled and tick() - lastPauseScan >= 0.2 then
-            lastPauseScan = tick()
+        if AutoCollectEnabled then
             pcall(function() GuiService:SetMenuIsOpen(false) end)
             local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
             if playerGui then
@@ -835,12 +832,6 @@ function RideAPet.Init(Window, WindUI)
     -- ============================================================
 
     local AutoCollectBusy = false
-    local FailedEggs = setmetatable({}, { __mode = "k" }) -- egg model -> เวลาที่เก็บพลาด
-
-    local function countBasket()
-        local b = LocalPlayer:FindFirstChild("Basket")
-        return b and #b:GetChildren() or 0
-    end
 
     local AutoCollectCollisionBackup = {}
     local AutoCollectTerrainBackup = nil
@@ -1179,7 +1170,7 @@ function RideAPet.Init(Window, WindUI)
                             end
 
                             local pickupPart = promptPart or eggBase
-                            if pickupPart and prompt and not (FailedEggs[egg] and tick() - FailedEggs[egg] < 8) then
+                            if pickupPart and prompt then
                                 table.insert(candidates, {
                                     egg = egg,
                                     part = pickupPart,
@@ -1198,7 +1189,6 @@ function RideAPet.Init(Window, WindUI)
                     local target = candidates[1]
                     if not target then
                         setStatus("รอไข่ชนิดที่เลือกไว้...")
-                        task.wait(0.3)
                         AutoCollectBusy = false
                         return
                     end
@@ -1212,7 +1202,6 @@ function RideAPet.Init(Window, WindUI)
                     end)
 
                     local backpackBeforePickup = {}
-                    local basketBefore = countBasket()
                     pcall(function()
                         for _, item in ipairs(LocalPlayer.Backpack:GetChildren()) do
                             if item:IsA("Tool") then
@@ -1240,17 +1229,17 @@ function RideAPet.Init(Window, WindUI)
                         return
                     end
 
-                    task.wait(0.35)
+                    task.wait(0.70)
 
                     -- 2) เก็บไข่
                     triggerAutoCollectPickup(target.prompt, target.part)
-                    task.wait(0.25)
+                    task.wait(0.50)
                     if AutoCollectEnabled and target.prompt and target.prompt.Parent then
                         pcall(function()
                             triggerAutoCollectPickup(target.prompt, target.part)
                         end)
                     end
-                    task.wait(0.30)
+                    task.wait(0.60)
 
                     -- หาเฉพาะไข่ Tool ที่เพิ่งเกิดจากการเก็บรอบนี้
                     local collectedEggTool = nil
@@ -1263,12 +1252,6 @@ function RideAPet.Init(Window, WindUI)
                         end
                     end)
 
-                    -- เก็บไม่สำเร็จ (ไม่มี Tool ใหม่ และ Basket ไม่เพิ่ม) -> ข้ามไข่ใบนี้ 8 วินาที กันวนเก็บซ้ำ
-                    if not collectedEggTool and countBasket() <= basketBefore then
-                        FailedEggs[target.egg] = tick()
-                        setStatus("เก็บ " .. tostring(target.name) .. " ไม่สำเร็จ — ข้ามไปก่อน")
-                    end
-
                     -- 3) ถือไข่ที่เพิ่งเก็บ แล้วลงใต้แมพชั่วคราว
                     if collectedEggTool then
                         pcall(function()
@@ -1277,7 +1260,7 @@ function RideAPet.Init(Window, WindUI)
                             if currentHum then currentHum:EquipTool(collectedEggTool) end
                         end)
 
-                        task.wait(0.25)
+                        task.wait(0.50)
 
                         pcall(function()
                             local currentChar = LocalPlayer.Character or Character
@@ -1289,7 +1272,7 @@ function RideAPet.Init(Window, WindUI)
                             end
                         end)
 
-                        task.wait(3.0)
+                        task.wait(5.0)
                     end
 
                     -- 4) ไม่ถือไข่ตอนกลับ
@@ -1343,7 +1326,7 @@ function RideAPet.Init(Window, WindUI)
             if AutoPlaceEnabled and (not AutoCollectEnabled or isNearHomeForPlace()) then
                 processAutoPlaceOnce()
             end
-            task.wait(1.2)
+            task.wait(1.2
         end
     end)
 
@@ -1522,7 +1505,6 @@ function RideAPet.Init(Window, WindUI)
             task.wait(0.5)
         end
     end)
-
 
     print("[RideAPet] Loaded Successfully — eggs: " .. #SortedEggs)
 end
