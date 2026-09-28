@@ -428,7 +428,7 @@ function Core.Init(mapName)
 
     HomeTab:Paragraph({
         Title = "พร้อมใช้งาน",
-        Desc = "RVX Hub Core ทำงานอยู่ • เมนูของแมพจะอยู่ในหมวด "แมพ" ตรงกลาง",
+        Desc = "RVX Hub Core ทำงานอยู่ • เมนูของแมพจะอยู่ในหมวด \"แมพ\" ตรงกลาง",
         Image = "circle-check",
         ImageSize = 20,
         Color = Color3.fromHex("#8AFFC1"),
