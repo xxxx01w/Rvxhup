@@ -971,9 +971,9 @@ function RideAPet.Init(Window, WindUI)
 
     -- ตั้งค่าจังหวะเวลา — ใช้ Teleport ไปเก็บและ Teleport กลับ
     local Settings = {
-        ArriveDelay = 0.4,  -- รอหลังวาปถึงไข่ ก่อนกดเก็บ
-        SettleDelay = 1.2,  -- รอหลังเก็บได้ ให้เซิร์ฟเวอร์ยืนยันก่อนวาปกลับ
-        BaseDelay = 0.5,    -- รอหลังวาปถึงฐาน ก่อนฝากไข่
+        ArriveDelay = 0.05, -- รอหลังวาปถึงไข่ ก่อนกดเก็บ
+        SettleDelay = 0.1,  -- รอหลังเก็บได้ ให้เซิร์ฟเวอร์ยืนยันก่อนวาปกลับ
+        BaseDelay = 0.1,    -- รอหลังวาปถึงฐาน ก่อนฝากไข่
     }
 
     local function processEggCollection(eggData)
@@ -1145,29 +1145,6 @@ function RideAPet.Init(Window, WindUI)
         end,
     })
 
-    secFarm:Slider({
-        Title = "หน่วงหลังวาปถึงไข่ (วินาที)",
-        Desc = "รอก่อนกดเก็บ ให้เซิร์ฟเวอร์รับตำแหน่งใหม่",
-        Step = 0.05,
-        Value = { Min = 0.05, Max = 1.5, Default = Settings.ArriveDelay },
-        Callback = function(v) Settings.ArriveDelay = tonumber(v) or Settings.ArriveDelay end,
-    })
-
-    secFarm:Slider({
-        Title = "หน่วงก่อนวาปกลับ (วินาที)",
-        Desc = "รอหลังเก็บได้ ก่อนวาปกลับ เพื่อให้เซิร์ฟเวอร์ยืนยันไข่",
-        Step = 0.05,
-        Value = { Min = 0.1, Max = 4, Default = Settings.SettleDelay },
-        Callback = function(v) Settings.SettleDelay = tonumber(v) or Settings.SettleDelay end,
-    })
-
-    secFarm:Slider({
-        Title = "หน่วงหลังวาปถึงฐาน (วินาที)",
-        Desc = "รอหลังวาปกลับถึงแปลง ก่อนฝากไข่",
-        Step = 0.05,
-        Value = { Min = 0.1, Max = 2, Default = Settings.BaseDelay },
-        Callback = function(v) Settings.BaseDelay = tonumber(v) or Settings.BaseDelay end,
-    })
 
     secFarm:Button({
         Title = "บันทึกจุดรังไข่ในแปลง (Set Home)",
