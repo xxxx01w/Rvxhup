@@ -1,5 +1,5 @@
 --[[
-    RVX Hub - Ride A Pet (Auto Egg Farm)
+    RVX Hub - Ride A Pet (Auto Egg Farm) (fixed)
     Module pattern: return table with Init(Window, WindUI)
 --]]
 
@@ -49,7 +49,8 @@ function RideAPet.Init(Window, WindUI)
     local GameRemotes = Remotes and Remotes:WaitForChild("Game", 10)
     local EggPickupRemote = GameRemotes and GameRemotes:WaitForChild("EggPickup", 10)
 
-   -- ตารางข้อมูลไข่ (เพิ่ม Diamond Egg และ Asteroid Egg เรียบร้อย)
+    -- ตารางข้อมูลไข่
+    -- หมายเหตุ: Tidal Egg และ Bloom Egg ค่า priority/rarity เป็นค่าประมาณ ปรับให้ตรงกับเกมจริงได้
     local EGG_DATA = {
         ["Volcanic Egg"]   = { priority = 2500000000000, rarity = "Ethereal" },
         ["Cherub Egg"]     = { priority = 1000000000000, rarity = "Ethereal" },
@@ -65,11 +66,13 @@ function RideAPet.Init(Window, WindUI)
         ["Skull Egg"]      = { priority = 250000,        rarity = "Mythic" },
         ["Crystal Egg"]    = { priority = 150000,        rarity = "Mythic" },
         ["Diamond Egg"]    = { priority = 80000,         rarity = "Legendary" },
+        ["Tidal Egg"]      = { priority = 50000,         rarity = "Legendary" },
         ["Golden Egg"]     = { priority = 30000,         rarity = "Legendary" },
         ["Glass Egg"]      = { priority = 10000,         rarity = "Legendary" },
         ["Ice Egg"]        = { priority = 3000,          rarity = "Epic" },
         ["Slime Egg"]      = { priority = 1000,          rarity = "Epic" },
         ["Flower Egg"]     = { priority = 750,           rarity = "Epic" },
+        ["Bloom Egg"]      = { priority = 600,           rarity = "Epic" },
         ["Mushroom Egg"]   = { priority = 500,           rarity = "Epic" },
         ["Leaf Egg"]       = { priority = 200,           rarity = "Rare" },
         ["Stone Egg"]      = { priority = 100,           rarity = "Rare" },
@@ -80,7 +83,7 @@ function RideAPet.Init(Window, WindUI)
     }
 
     local function normalizeEggName(name)
-        return tostring(name):gsub("%s+", ""):lower()
+        return (tostring(name):gsub("%s+", ""):lower())
     end
 
     local NORMALIZED_EGG_DATA = {}
@@ -98,7 +101,7 @@ function RideAPet.Init(Window, WindUI)
         return info
     end
 
-    -- ===== สแกนรายชื่อไข่สดจากเกมอัตโนมัติ (Dynamic Egg Scan + เรียงตาม Priority) =====
+    -- ===== สแกนรายชื่อไข่สดจากเกมอัตโนมัติ (เรียงตาม Priority) =====
     local AvailableEggOptions = {}
     local OptionToRawName = {}
 
@@ -126,7 +129,7 @@ function RideAPet.Init(Window, WindUI)
             local priority = info and info.priority or 0
             local rarity = info and info.rarity or "Unknown"
             local label = string.format("[%s] %s", rarity, rawName)
-            
+
             table.insert(eggListTemp, {
                 label = label,
                 rawName = rawName,
@@ -135,8 +138,10 @@ function RideAPet.Init(Window, WindUI)
             OptionToRawName[label] = rawName
         end
 
-        -- เรียงลำดับระดับโหด (Priority สูง) อยู่ด้านบนสุดลงไปกากสุด
         table.sort(eggListTemp, function(a, b)
+            if a.priority == b.priority then
+                return a.rawName < b.rawName
+            end
             return a.priority > b.priority
         end)
 
@@ -146,6 +151,31 @@ function RideAPet.Init(Window, WindUI)
     end
 
     RefreshDynamicEggList()
+
+    -- แปลงค่าที่ Dropdown คืนมา (array / map / string) เป็น set ของชื่อไข่ที่ normalize แล้ว
+    local function parseSelection(selected)
+        local result = {}
+
+        local function add(value)
+            if type(value) ~= "string" then return end
+            local rawName = OptionToRawName[value] or value
+            result[normalizeEggName(rawName)] = true
+        end
+
+        if type(selected) == "table" then
+            for k, item in pairs(selected) do
+                if type(k) == "string" and (item == true or item == 1) then
+                    add(k)
+                else
+                    add(item)
+                end
+            end
+        elseif type(selected) == "string" then
+            add(selected)
+        end
+
+        return result
+    end
 
     -- โหลดค่าไข่สำหรับ Auto Farm
     local SelectedEggTypes = {}
@@ -159,7 +189,7 @@ function RideAPet.Init(Window, WindUI)
         SelectedEspEggTypes[normalizeEggName(rawName)] = true
     end
 
-    -- โหลดค่าไข่สำหรับ Auto Place (แยกจากรายการ Auto Farm)
+    -- โหลดค่าไข่สำหรับ Auto Place
     local SelectedPlaceEggTypes = {}
     for _, rawName in ipairs(SavedConfig.SelectedPlaceEggNames or {}) do
         SelectedPlaceEggTypes[normalizeEggName(rawName)] = true
@@ -174,7 +204,6 @@ function RideAPet.Init(Window, WindUI)
 
     local MOVEMENT_MODE_OPTIONS = { "บิน (Tween ลื่นๆ)", "วาป (Teleport ทันที)" }
     local CurrentMovementMode = "วาป (Teleport ทันที)"
-    local RETURN_FLY_SPEED = 70
 
     local statusParagraph = nil
     local function setStatus(text)
@@ -189,33 +218,26 @@ function RideAPet.Init(Window, WindUI)
         end
     end
 
+    -- วนจากรายชื่อที่สแกนได้จริง (OptionToRawName) ไม่ใช่แค่ EGG_DATA
+    -- ไข่ใหม่ที่ยังไม่อยู่ในตารางจะได้บันทึกค่าติดด้วย
+    local function collectSelected(set)
+        local list, seen = {}, {}
+        for _, rawName in pairs(OptionToRawName) do
+            if set[normalizeEggName(rawName)] and not seen[rawName] then
+                seen[rawName] = true
+                table.insert(list, rawName)
+            end
+        end
+        table.sort(list)
+        return list
+    end
+
     local function PersistEggConfig()
-        local selectedList = {}
-        for rawName in pairs(EGG_DATA) do
-            if SelectedEggTypes[normalizeEggName(rawName)] then
-                table.insert(selectedList, rawName)
-            end
-        end
-        
-        local selectedEspList = {}
-        for rawName in pairs(EGG_DATA) do
-            if SelectedEspEggTypes[normalizeEggName(rawName)] then
-                table.insert(selectedEspList, rawName)
-            end
-        end
-
-        local selectedPlaceList = {}
-        for rawName in pairs(EGG_DATA) do
-            if SelectedPlaceEggTypes[normalizeEggName(rawName)] then
-                table.insert(selectedPlaceList, rawName)
-            end
-        end
-
         SaveConfig({
             EspEnabled = SavedConfig.EspEnabled,
-            SelectedEggNames = selectedList,
-            SelectedEspEggNames = selectedEspList,
-            SelectedPlaceEggNames = selectedPlaceList,
+            SelectedEggNames = collectSelected(SelectedEggTypes),
+            SelectedEspEggNames = collectSelected(SelectedEspEggTypes),
+            SelectedPlaceEggNames = collectSelected(SelectedPlaceEggTypes),
             PlaceMode = PlaceMode
         })
     end
@@ -227,14 +249,14 @@ function RideAPet.Init(Window, WindUI)
             if playerGui then
                 for _, gui in ipairs(playerGui:GetChildren()) do
                     if gui.Name == "StreamingPauseGui" or gui:FindFirstChild("PauseFrame") or gui.Name:find("Pause") then
-                        gui.Enabled = false
+                        pcall(function() gui.Enabled = false end)
                     end
                 end
             end
             local robloxGui = CoreGui:FindFirstChild("RobloxGui")
             if robloxGui then
                 local pauseGui = robloxGui:FindFirstChild("StreamingPauseGui")
-                if pauseGui then pauseGui.Enabled = false end
+                if pauseGui then pcall(function() pauseGui.Enabled = false end) end
             end
         end
     end)
@@ -333,7 +355,6 @@ function RideAPet.Init(Window, WindUI)
     end
 
     -- ===== Auto Place Egg =====
-    -- ใช้ Tool:Activate() แบบเดียวกับตัวทดสอบที่ทำงานได้
     local PlaceFullMax = nil
     local PlaceEggFolder = nil
     local PlaceGuiLabel = nil
@@ -367,15 +388,7 @@ function RideAPet.Init(Window, WindUI)
     end
 
     local function isPlaceEggSelected(toolName)
-        local key = normalizeEggName(toolName)
-        if SelectedPlaceEggTypes[key] == true then return true end
-        -- รองรับกรณี UI คืนชื่อแบบมีช่องว่าง/คำนำหน้าความหายาก
-        for selectedName, enabled in pairs(SelectedPlaceEggTypes) do
-            if enabled and (selectedName == key or selectedName:gsub("%s+", "") == key) then
-                return true
-            end
-        end
-        return false
+        return SelectedPlaceEggTypes[normalizeEggName(toolName)] == true
     end
 
     local function shouldPlaceTool(tool)
@@ -529,7 +542,7 @@ function RideAPet.Init(Window, WindUI)
 
         local ok = pcall(function()
             local vim = game:GetService("VirtualInputManager")
-            vim:SendMouseMoveEvent(x, y, 0, game)
+            vim:SendMouseMoveEvent(x, y, game)
         end)
         if ok then return true end
 
@@ -587,36 +600,43 @@ function RideAPet.Init(Window, WindUI)
     local function processAutoPlaceOnce()
         if AutoPlaceBusy or not AutoPlaceEnabled or not isNearHomeForPlace() then return end
         AutoPlaceBusy = true
-        local full, placed, max = gardenIsFull()
-        if full then
-            setStatus(string.format("พื้นที่ในสวนเต็ม (%d/%d) — หยุดการวาง", placed, max))
-            AutoPlaceBusy = false
-            return
-        end
-        local tools = getEggTools()
-        local made = 0
-        for _, tool in ipairs(tools) do
-            if not AutoPlaceEnabled then break end
-            local liveFull = gardenIsFull()
-            if liveFull then break end
-            if shouldPlaceTool(tool) then
-                setStatus("กำลังวางไข่: " .. tool.Name)
-                local ok = activateEggTool(tool)
-                if ok then
-                    made = made + 1
-                    if AutoPlaceBlockedEggs then AutoPlaceBlockedEggs[normalizeEggName(tool.Name)] = nil end
-                elseif AutoPlaceBlockedEggs then
-                    AutoPlaceBlockedEggs[normalizeEggName(tool.Name)] = true
+
+        -- ห่อด้วย pcall เพื่อให้ AutoPlaceBusy ถูกรีเซ็ตเสมอ แม้เกิด error กลางทาง
+        local ok, err = pcall(function()
+            local full, placed, max = gardenIsFull()
+            if full then
+                setStatus(string.format("พื้นที่ในสวนเต็ม (%d/%d) — หยุดการวาง", placed, max))
+                return
+            end
+            local tools = getEggTools()
+            local made = 0
+            for _, tool in ipairs(tools) do
+                if not AutoPlaceEnabled then break end
+                local liveFull = gardenIsFull()
+                if liveFull then break end
+                if shouldPlaceTool(tool) then
+                    setStatus("กำลังวางไข่: " .. tool.Name)
+                    local placedOk = activateEggTool(tool)
+                    if placedOk then
+                        made = made + 1
+                        AutoPlaceBlockedEggs[normalizeEggName(tool.Name)] = nil
+                    else
+                        AutoPlaceBlockedEggs[normalizeEggName(tool.Name)] = true
+                    end
                 end
             end
-        end
-        local afterFull, afterPlaced, afterMax = gardenIsFull()
-        if afterFull then
-            setStatus(string.format("พื้นที่ในสวนเต็ม (%d/%d) — หยุดการวาง", afterPlaced, afterMax))
-        elseif made > 0 then
-            setStatus("วางไข่สำเร็จ " .. made .. " ฟอง")
-        else
-            setStatus("รอช่องว่างในสวน...")
+            local afterFull, afterPlaced, afterMax = gardenIsFull()
+            if afterFull then
+                setStatus(string.format("พื้นที่ในสวนเต็ม (%d/%d) — หยุดการวาง", afterPlaced, afterMax))
+            elseif made > 0 then
+                setStatus("วางไข่สำเร็จ " .. made .. " ฟอง")
+            else
+                setStatus("รอช่องว่างในสวน...")
+            end
+        end)
+
+        if not ok then
+            warn("[RideAPet] AutoPlace error: " .. tostring(err))
         end
         AutoPlaceBusy = false
     end
@@ -647,7 +667,6 @@ function RideAPet.Init(Window, WindUI)
             targetPos = eggData.model:GetPivot().Position
         end
 
-        -- อยู่ด้านหน้า/เหนือจุด Prompt เล็กน้อย เพื่อให้ระยะ ProximityPrompt ผ่าน
         local targetCF = CFrame.new(targetPos + Vector3.new(0, 1.5, 0))
 
         if CurrentMovementMode == "วาป (Teleport ทันที)" then
@@ -667,20 +686,18 @@ function RideAPet.Init(Window, WindUI)
                 break
             end
 
-            -- ใช้ ProximityPrompt เป็นหลัก เพราะเซิร์ฟเวอร์ตรวจสอบระยะ/สถานะของการเก็บ
             if prompt and prompt.Parent then
                 local firePrompt = fireproximityprompt or (getgenv and getgenv().fireproximityprompt)
                 if firePrompt then
                     pcall(function() firePrompt(prompt, 1, true) end)
                 else
-                    -- fallback ของ Roblox Prompt API
                     pcall(function() prompt:InputHoldBegin() end)
                     task.wait(0.15)
                     pcall(function() prompt:InputHoldEnd() end)
                 end
             end
 
-            -- remote เป็น fallback เท่านั้น ไม่พึ่ง remote อย่างเดียว
+            -- remote เป็น fallback เท่านั้น
             if EggPickupRemote then
                 pcall(function() EggPickupRemote:FireServer(eggData.model) end)
             end
@@ -693,14 +710,13 @@ function RideAPet.Init(Window, WindUI)
         end
 
         if collected then
-            setStatus("เก็บ " .. eggData.name .. " แล้ว กำลังบินกลับบ้าน...")
+            setStatus("เก็บ " .. eggData.name .. " แล้ว กำลังวาปกลับบ้าน...")
 
             if MyPlotCFrame then
                 pcall(function() LocalPlayer:RequestStreamAroundAsync(MyPlotCFrame.Position) end)
                 task.wait(0.15)
 
                 setStatus("กำลังวาปกลับเข้าแปลง...")
-                -- กลับบ้านด้วย CFrame ทันที แทนการ Tween
                 hrp.CFrame = MyPlotCFrame
                 task.wait(0.15)
             end
@@ -713,8 +729,6 @@ function RideAPet.Init(Window, WindUI)
     end
 
     -- ===== UI Interface =====
-    -- Core V4 provides the centralized current-game section.
-    -- All Ride A Pet features live here so the main sidebar stays clean.
     local GameSection = Window.RVXGameSection or Window
 
     local FarmTab = GameSection:Tab({ Title = "Auto Egg", Icon = "egg" })
@@ -744,33 +758,26 @@ function RideAPet.Init(Window, WindUI)
         Callback = function(selected) CurrentMovementMode = selected end,
     })
 
-    -- ตั้งค่าคำล่วงหน้าสำหรับ Multi-Select (Auto Farm)
-    local initialSelectedLabels = {}
-    for label, rawName in pairs(OptionToRawName) do
-        if SelectedEggTypes[normalizeEggName(rawName)] then
-            table.insert(initialSelectedLabels, label)
+    local function buildInitialLabels(set)
+        local labels = {}
+        for label, rawName in pairs(OptionToRawName) do
+            if set[normalizeEggName(rawName)] then
+                table.insert(labels, label)
+            end
         end
+        return labels
     end
 
     secFarm:Dropdown({
         Title = "เลือกไข่ที่จะเก็บ",
         Desc = "สแกนไข่สดจากเกมเรียบร้อย (เรียงจากระดับสูงสุดไปต่ำสุด)",
         Values = AvailableEggOptions,
-        Value = initialSelectedLabels,
+        Value = buildInitialLabels(SelectedEggTypes),
         Multi = true,
-        Search = true, -- เปิดช่องค้นหาใน Dropdown
+        Search = true,
         AllowNone = true,
         Callback = function(selected)
-            SelectedEggTypes = {}
-            if type(selected) == "table" then
-                for _, item in ipairs(selected) do
-                    local rawName = OptionToRawName[item] or item
-                    SelectedEggTypes[normalizeEggName(rawName)] = true
-                end
-            elseif type(selected) == "string" then
-                local rawName = OptionToRawName[selected] or selected
-                SelectedEggTypes[normalizeEggName(rawName)] = true
-            end
+            SelectedEggTypes = parseSelection(selected)
             PersistEggConfig()
         end,
     })
@@ -817,42 +824,18 @@ function RideAPet.Init(Window, WindUI)
         end,
     })
 
-    local initialPlaceSelectedLabels = {}
-    for label, rawName in pairs(OptionToRawName) do
-        if SelectedPlaceEggTypes[normalizeEggName(rawName)] then
-            table.insert(initialPlaceSelectedLabels, label)
-        end
-    end
-
     secPlace:Dropdown({
         Title = "เลือกไข่ที่จะวาง",
         Desc = "เลือกหลายชนิดได้เหมือนเมนูเลือกไข่ที่จะเก็บ",
         Values = AvailableEggOptions,
-        Value = initialPlaceSelectedLabels,
+        Value = buildInitialLabels(SelectedPlaceEggTypes),
         Multi = true,
         Search = true,
         AllowNone = true,
         Callback = function(selected)
-            SelectedPlaceEggTypes = {}
-            if type(selected) == "table" then
-                -- WindUI บางเวอร์ชันคืน Multi-Select เป็น array และบางเวอร์ชันคืน table/map
-                for k, item in pairs(selected) do
-                    local value = item
-                    if type(k) == "string" and (item == true or item == 1) then
-                        value = k
-                    end
-                    if type(value) == "string" then
-                        local rawName = OptionToRawName[value] or value
-                        -- ถ้าเป็น label เช่น [Divine] Galaxy Egg ให้ลองดึงชื่อจริงด้วย
-                        local mapped = OptionToRawName[value]
-                        if mapped then rawName = mapped end
-                        SelectedPlaceEggTypes[normalizeEggName(rawName)] = true
-                    end
-                end
-            elseif type(selected) == "string" then
-                local rawName = OptionToRawName[selected] or selected
-                SelectedPlaceEggTypes[normalizeEggName(rawName)] = true
-            end
+            SelectedPlaceEggTypes = parseSelection(selected)
+            -- เลือกไข่ใหม่แล้ว ให้ล้างรายการที่เคยถูกบล็อกไว้
+            AutoPlaceBlockedEggs = {}
             PersistEggConfig()
         end,
     })
@@ -860,13 +843,19 @@ function RideAPet.Init(Window, WindUI)
     task.spawn(function()
         while true do
             if AutoFarmEnabled then
-                local eggs = getAvailableEggs()
-                if #eggs > 0 then
-                    local bestTarget = eggs[1]
-                    setStatus("เป้าหมาย: " .. bestTarget.name .. " (" .. bestTarget.rarity .. ")")
-                    processEggCollection(bestTarget)
-                else
-                    setStatus("รอไข่ชนิดที่เลือกไว้...")
+                local ok, err = pcall(function()
+                    local eggs = getAvailableEggs()
+                    if #eggs > 0 then
+                        local bestTarget = eggs[1]
+                        setStatus("เป้าหมาย: " .. bestTarget.name .. " (" .. bestTarget.rarity .. ")")
+                        processEggCollection(bestTarget)
+                    else
+                        setStatus("รอไข่ชนิดที่เลือกไว้...")
+                    end
+                end)
+                if not ok then
+                    warn("[RideAPet] AutoFarm error: " .. tostring(err))
+                    setNoClip(false)
                 end
             end
             task.wait(0.6)
@@ -875,9 +864,7 @@ function RideAPet.Init(Window, WindUI)
 
     task.spawn(function()
         while true do
-            if AutoPlaceEnabled and not AutoFarmEnabled then
-                processAutoPlaceOnce()
-            elseif AutoPlaceEnabled and AutoFarmEnabled and isNearHomeForPlace() then
+            if AutoPlaceEnabled and (not AutoFarmEnabled or isNearHomeForPlace()) then
                 processAutoPlaceOnce()
             end
             task.wait(0.8)
@@ -891,7 +878,6 @@ function RideAPet.Init(Window, WindUI)
     local EspEnabled = SavedConfig.EspEnabled
     local EspBillboards = {}
 
-    -- ESP ต้องอยู่ใน PlayerGui เพื่อให้ BillboardGui แสดงบนวัตถุใน Workspace ได้เสถียร
     local function getEspGuiParent()
         local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
         if playerGui then
@@ -974,33 +960,16 @@ function RideAPet.Init(Window, WindUI)
         end,
     })
 
-    local initialEspSelectedLabels = {}
-    for label, rawName in pairs(OptionToRawName) do
-        if SelectedEspEggTypes[normalizeEggName(rawName)] then
-            table.insert(initialEspSelectedLabels, label)
-        end
-    end
-
     secEsp:Dropdown({
         Title = "เลือกไข่ที่จะแสดง ESP",
         Desc = "เลือกประเภทไข่ที่ต้องการโชว์ป้าย (หากไม่เลือกจะไม่โชว์ป้าย)",
         Values = AvailableEggOptions,
-        Value = initialEspSelectedLabels,
+        Value = buildInitialLabels(SelectedEspEggTypes),
         Multi = true,
-        Search = true, -- เปิดช่องค้นหาใน Dropdown ESP
+        Search = true,
         AllowNone = true,
         Callback = function(selected)
-            SelectedEspEggTypes = {}
-            if type(selected) == "table" then
-                for _, item in ipairs(selected) do
-                    local rawName = OptionToRawName[item] or item
-                    SelectedEspEggTypes[normalizeEggName(rawName)] = true
-                end
-            elseif type(selected) == "string" then
-                local rawName = OptionToRawName[selected] or selected
-                SelectedEspEggTypes[normalizeEggName(rawName)] = true
-            end
-            
+            SelectedEspEggTypes = parseSelection(selected)
             clearAllEsp()
             PersistEggConfig()
         end,
@@ -1010,7 +979,8 @@ function RideAPet.Init(Window, WindUI)
         while true do
             if EspEnabled then
                 local char = LocalPlayer.Character
-                local myPos = char and char:FindFirstChild("HumanoidRootPart") and char.HumanoidRootPart.Position
+                local hrp = char and char:FindFirstChild("HumanoidRootPart")
+                local myPos = hrp and hrp.Position
 
                 for eggModel, data in pairs(EspBillboards) do
                     if eggModel and eggModel.Parent and data.targetPart and data.targetPart.Parent then
@@ -1046,7 +1016,6 @@ function RideAPet.Init(Window, WindUI)
                     end
                 end
             else
-                -- ถ้าปิด ESP ให้ล้างป้ายที่ค้างอยู่
                 if next(EspBillboards) then
                     clearAllEsp()
                 end
