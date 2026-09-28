@@ -781,89 +781,423 @@ function RideAPet.Init(Window, WindUI)
         AutoPlaceBusy = false
     end
 
-    local function processEggCollection(eggData)
+    -- ============================================================
+    -- ระบบเก็บไข่ (ทำตามขั้นตอนที่เกมตรวจสอบ)
+    -- 1) ต้องขี่สัตว์เลี้ยงก่อน  2) วาปไปหาไข่  3) ยิง prompt + ส่ง UUID ของไข่ให้ remote
+    -- 4) รอให้ไข่เข้า Basket/มือ แล้วหน่วงให้เซิร์ฟเวอร์ยืนยัน  5) วาปกลับฐาน + ฝากไข่จาก Basket
+    -- ถ้าวาปกลับทันทีหรือไม่ได้ส่ง UUID เกมจะคืนไข่ ("Your Egg Was Returned")
+    -- ============================================================
+    local CollectionService = game:GetService("CollectionService")
+    local Remote_Mounting = GameRemotes and GameRemotes:FindFirstChild("Mounting")
+    local Remote_PetDismount = GameRemotes and GameRemotes:FindFirstChild("PetDismount")
+    local Remote_PickupPet = GameRemotes and GameRemotes:FindFirstChild("PickupPet")
+
+    local GamePetsData = {}
+    pcall(function()
+        local gd = ReplicatedStorage:FindFirstChild("GameData")
+        local m = gd and gd:FindFirstChild("Pets")
+        if m then
+            local d = require(m)
+            if type(d) == "table" then GamePetsData = d end
+        end
+    end)
+
+    local function getChar()
         local char = LocalPlayer.Character
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
-        if not hrp or not eggData or not eggData.model or not eggData.model.Parent then return false end
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        return char, hrp, hum
+    end
+
+    local function ownsPlot(p)
+        local ownerId = p:GetAttribute("NestsOwnerLoaded") or p:GetAttribute("OwnerUserId")
+        local ownerName = p:GetAttribute("Owner")
+        local dataOwner = p:FindFirstChild("Data") and p.Data:FindFirstChild("Owner")
+        local dataOwnerVal = dataOwner and (typeof(dataOwner.Value) == "Instance" and dataOwner.Value.Name or tostring(dataOwner.Value))
+        return (ownerId and (tostring(ownerId) == tostring(LocalPlayer.UserId)))
+            or (ownerName and tostring(ownerName) == LocalPlayer.Name)
+            or (dataOwnerVal and dataOwnerVal:find(LocalPlayer.Name, 1, true) ~= nil)
+    end
+
+    local cachedPlot = nil
+    local function getMyPlot()
+        if cachedPlot and cachedPlot.Parent and ownsPlot(cachedPlot) then return cachedPlot end
+        cachedPlot = nil
+        local ok, General = pcall(function() return require(ReplicatedStorage.GameServices.General) end)
+        if ok and General and General.GetPlot then
+            local okPlot, p = pcall(function() return General:GetPlot(LocalPlayer) end)
+            if okPlot and p then cachedPlot = p return p end
+        end
+        local plots = Workspace:FindFirstChild("Plots")
+        if plots then
+            for _, p in ipairs(plots:GetChildren()) do
+                if ownsPlot(p) then cachedPlot = p return p end
+            end
+        end
+        return nil
+    end
+
+    local function getBasePos()
+        local plot = getMyPlot()
+        if plot then
+            local bp = plot:FindFirstChild("Baseplate")
+            if bp then return bp.Position + Vector3.new(0, 4.5, 0), bp end
+            local ok, pivot = pcall(function() return plot:GetPivot().Position end)
+            if ok and pivot then return pivot + Vector3.new(0, 4, 0), nil end
+        end
+        if MyPlotCFrame then return MyPlotCFrame.Position, nil end
+        return nil, nil
+    end
+
+    local function isOnMyPlot()
+        local _, hrp = getChar()
+        if not hrp then return false end
+        local pos, bp = getBasePos()
+        if not pos then return false end
+        local ref = bp and bp.Position or pos
+        local flat = (Vector3.new(hrp.Position.X, 0, hrp.Position.Z) - Vector3.new(ref.X, 0, ref.Z)).Magnitude
+        return flat <= 38
+    end
+
+    local FlightHold = nil
+    local function holdFlight(hrp)
+        if not hrp then return end
+        pcall(function()
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+        end)
+        if not FlightHold or not FlightHold.Parent or FlightHold.Parent ~= hrp then
+            local old = hrp:FindFirstChild("RVXFlightHold")
+            if old then old:Destroy() end
+            FlightHold = Instance.new("BodyVelocity")
+            FlightHold.Name = "RVXFlightHold"
+            FlightHold.MaxForce = Vector3.new(2e6, 2e6, 2e6)
+            FlightHold.Velocity = Vector3.zero
+            FlightHold.Parent = hrp
+        end
+    end
+
+    local function releaseFlight()
+        if FlightHold then
+            pcall(function() FlightHold:Destroy() end)
+            FlightHold = nil
+        end
+        local _, hrp = getChar()
+        if hrp then
+            local old = hrp:FindFirstChild("RVXFlightHold")
+            if old then pcall(function() old:Destroy() end) end
+        end
+    end
+
+    local function triggerPrompt(prompt, holdTime)
+        if not prompt or not prompt.Parent then return end
+        local executed = false
+        if fireproximityprompt then
+            executed = pcall(function() fireproximityprompt(prompt, 0) end)
+        end
+        if not executed and prompt.InputHoldBegin and prompt.InputHoldEnd then
+            pcall(function()
+                prompt:InputHoldBegin()
+                task.wait(holdTime or (prompt.HoldDuration > 0 and (prompt.HoldDuration + 0.05) or 0.15))
+                prompt:InputHoldEnd()
+            end)
+        end
+    end
+
+    -- หา UUID ของไข่จาก ReplicatedStorage.ServerData.ActiveEggs (จับคู่จากตำแหน่ง)
+    local function getEggUuid(eggModel)
+        local part = eggModel:FindFirstChildWhichIsA("BasePart", true) or eggModel.PrimaryPart
+        local eggPos = part and part.Position or eggModel:GetPivot().Position
+        local sd = ReplicatedStorage:FindFirstChild("ServerData")
+        local folder = sd and sd:FindFirstChild("ActiveEggs")
+        if folder then
+            local best, bestDist = nil, 25
+            for _, ae in ipairs(folder:GetChildren()) do
+                local pos = ae:GetAttribute("Position")
+                if typeof(pos) == "string" then
+                    local c = string.split(pos, ",")
+                    if #c == 3 then pos = Vector3.new(tonumber(c[1]), tonumber(c[2]), tonumber(c[3])) end
+                end
+                if typeof(pos) == "Vector3" then
+                    local h = (Vector3.new(pos.X, 0, pos.Z) - Vector3.new(eggPos.X, 0, eggPos.Z)).Magnitude
+                    local v = math.abs(pos.Y - eggPos.Y)
+                    if h < 15 and v < 45 and h < bestDist then best, bestDist = ae, h end
+                end
+            end
+            if best then return best.Name end
+        end
+        -- fallback: ดึง UUID จาก upvalue ของ prompt (ต้องใช้ getconnections)
+        local prompt = eggModel:FindFirstChildWhichIsA("ProximityPrompt", true)
+        if prompt and getconnections and getupvalues then
+            local uuid
+            pcall(function()
+                for _, c in ipairs(getconnections(prompt.Triggered)) do
+                    if c.Function then
+                        for _, u in pairs(getupvalues(c.Function)) do
+                            if typeof(u) == "Instance" and u.Parent and u.Parent.Name == "ActiveEggs" then
+                                uuid = u.Name break
+                            elseif type(u) == "string" and #u > 20 and u:find("-") then
+                                uuid = u break
+                            end
+                        end
+                    end
+                    if uuid then break end
+                end
+            end)
+            return uuid
+        end
+        return nil
+    end
+
+    local function cleanPetName(name)
+        local s = tostring(name or ""):gsub("%s*%b[]", ""):gsub("%s*%b()", "")
+        s = s:gsub("^%s+", ""):gsub("%s+$", "")
+        return s
+    end
+
+    local function isPetTool(item)
+        return item:IsA("Tool") and (item:GetAttribute("PetName") or item:GetAttribute("PetKey") or CollectionService:HasTag(item, "Pet"))
+    end
+
+    -- ขี่สัตว์เลี้ยงที่เร็วที่สุด (เกมต้องให้ขี่ก่อนถึงจะเก็บไข่ได้)
+    local function mountBestPet()
+        local char, hrp, hum = getChar()
+        if not char or not hrp or not hum then return false end
+
+        local function speedOf(name)
+            local d = GamePetsData[cleanPetName(name)] or GamePetsData[name] or {}
+            return d.Speed or d.RideSpeed or 50
+        end
+
+        local bestTool, bestKey, bestSpeed, bestName = nil, nil, -1, ""
+
+        local held = char:FindFirstChildOfClass("Tool")
+        if held and isPetTool(held) then
+            local n = held:GetAttribute("PetName") or held.Name
+            bestTool, bestSpeed, bestName = held, speedOf(n), n
+        end
+
+        local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
+        if backpack then
+            for _, item in ipairs(backpack:GetChildren()) do
+                if isPetTool(item) then
+                    local n = item:GetAttribute("PetName") or item.Name
+                    local s = speedOf(n)
+                    if s > bestSpeed then bestTool, bestKey, bestSpeed, bestName = item, nil, s, n end
+                end
+            end
+        end
+
+        local plot = getMyPlot()
+        local petsFolder = plot and plot:FindFirstChild("Pets")
+        if petsFolder then
+            for _, p in ipairs(petsFolder:GetChildren()) do
+                local n = p:GetAttribute("PetName") or p.Name
+                local key = p:GetAttribute("PetKey")
+                local s = speedOf(n)
+                if key and s > bestSpeed then bestTool, bestKey, bestSpeed, bestName = nil, key, s, n end
+            end
+        end
+
+        if not bestTool and not bestKey then return false end
+
+        local joint = hrp:FindFirstChild("PetMountJoint")
+        local riding = LocalPlayer:GetAttribute("IsRiding") == true or joint ~= nil
+        local cleanBest = cleanPetName(bestName)
+        if riding and joint and joint.Part1 and joint.Part1.Parent and joint.Part1.Parent.Name:find(cleanBest, 1, true) then
+            return true
+        end
+        if riding and Remote_PetDismount then
+            Remote_PetDismount:FireServer()
+            task.wait(0.3)
+        end
+
+        if bestKey and Remote_PickupPet then
+            Remote_PickupPet:FireServer(bestKey)
+            task.wait(0.3)
+            local bp2 = LocalPlayer:FindFirstChildOfClass("Backpack")
+            if bp2 then
+                for _, item in ipairs(bp2:GetChildren()) do
+                    if item:IsA("Tool") and item:GetAttribute("PetKey") == bestKey then bestTool = item break end
+                end
+            end
+        end
+
+        if bestTool then
+            if bestTool.Parent ~= char then
+                pcall(function() hum:UnequipTools() end)
+                task.wait(0.08)
+                pcall(function() hum:EquipTool(bestTool) end)
+                task.wait(0.2)
+            end
+            if Remote_Mounting then
+                Remote_Mounting:FireServer()
+                task.wait(0.3)
+            end
+            return true
+        end
+        return false
+    end
+
+    local function isEggTool(it)
+        return it:IsA("Tool") and (it.Name:find("Egg") or it:GetAttribute("Egg") or it:GetAttribute("IsEgg"))
+    end
+
+    -- ฝากไข่จาก Basket เข้ากระเป๋า โดยแตะ Baseplate ของแปลงตัวเอง
+    local function depositBasket()
+        local plot = getMyPlot()
+        local baseplate = plot and plot:FindFirstChild("Baseplate")
+        local _, hrp = getChar()
+        if not baseplate or not hrp then return false end
+        local basket = LocalPlayer:FindFirstChild("Basket")
+        if not basket or #basket:GetChildren() == 0 then return true end
+
+        local rel = baseplate.CFrame:PointToObjectSpace(hrp.Position)
+        local onPlate = math.abs(rel.X) <= (baseplate.Size.X / 2 + 5) and math.abs(rel.Z) <= (baseplate.Size.Z / 2 + 5)
+        if not onPlate then
+            local y = baseplate.Position.Y + baseplate.Size.Y / 2 + 2.5
+            hrp.CFrame = CFrame.new(Vector3.new(baseplate.Position.X, y, baseplate.Position.Z))
+            task.wait(0.04)
+        end
+        if firetouchinterest then
+            pcall(function()
+                firetouchinterest(hrp, baseplate, 0)
+                task.wait(0.04)
+                firetouchinterest(hrp, baseplate, 1)
+            end)
+        end
+        local t0 = tick()
+        while tick() - t0 < 0.8 and #basket:GetChildren() > 0 do
+            task.wait(0.04)
+        end
+        return true
+    end
+
+    local function processEggCollection(eggData)
+        local char, hrp, hum = getChar()
+        if not hrp or not hum or hum.Health <= 0 then return false end
+        if not eggData or not eggData.model or not eggData.model.Parent then return false end
 
         if not MyPlotCFrame then saveHomePosition() end
 
-        setNoClip(true)
+        -- ฝากไข่ที่ค้างใน Basket ก่อนเริ่มรอบใหม่
+        local basket = LocalPlayer:FindFirstChild("Basket")
+        if basket and #basket:GetChildren() > 0 then
+            depositBasket()
+            task.wait(0.08)
+        end
 
+        -- ต้องขี่สัตว์ก่อนเก็บไข่
+        if LocalPlayer:GetAttribute("IsRiding") ~= true then
+            setStatus("กำลังขี่สัตว์เลี้ยง...")
+            pcall(mountBestPet)
+            task.wait(0.12)
+            char, hrp, hum = getChar()
+            if not hrp then return false end
+        end
+
+        local model = eggData.model
         local prompt = eggData.prompt
-        local targetPart = nil
-        if prompt and prompt.Parent then
-            if prompt.Parent:IsA("BasePart") then
-                targetPart = prompt.Parent
-            elseif prompt.Parent:IsA("Attachment") and prompt.Parent.Parent and prompt.Parent.Parent:IsA("BasePart") then
-                targetPart = prompt.Parent.Parent
-            end
+        if not prompt or not prompt.Parent then
+            prompt = model:FindFirstChildWhichIsA("ProximityPrompt", true)
         end
 
-        local targetPos
-        if targetPart then
-            targetPos = targetPart.Position
-        else
-            targetPos = eggData.model:GetPivot().Position
-        end
+        local part = model:FindFirstChildWhichIsA("BasePart", true) or model.PrimaryPart
+        local eggPos = part and part.Position or model:GetPivot().Position
+        local targetPos = eggPos + Vector3.new(0, 1.8, 0)
 
-        local targetCF = CFrame.new(targetPos + Vector3.new(0, 1.5, 0))
+        local uuid = getEggUuid(model)
+
+        setNoClip(true)
+        holdFlight(hrp)
 
         if CurrentMovementMode == "วาป (Teleport ทันที)" then
-            hrp.CFrame = targetCF
+            pcall(function()
+                hrp.CFrame = CFrame.new(targetPos)
+                hrp.AssemblyLinearVelocity = Vector3.zero
+                hrp.AssemblyAngularVelocity = Vector3.zero
+            end)
+            task.wait(0.02)
         else
-            tweenTo(targetCF, 45)
+            tweenTo(CFrame.new(targetPos), 45)
         end
 
-        task.wait(0.25)
+        local basketNow = LocalPlayer:FindFirstChild("Basket")
+        local prevBasketCount = basketNow and #basketNow:GetChildren() or 0
 
-        local collected = false
-        local startTime = tick()
-
-        while tick() - startTime < 3 do
-            if not eggData.model or not eggData.model.Parent then
-                collected = true
-                break
-            end
-
-            if prompt and prompt.Parent then
-                local firePrompt = fireproximityprompt or (getgenv and getgenv().fireproximityprompt)
-                if firePrompt then
-                    pcall(function() firePrompt(prompt, 1, true) end)
-                else
-                    pcall(function() prompt:InputHoldBegin() end)
-                    task.wait(0.15)
-                    pcall(function() prompt:InputHoldEnd() end)
+        local function acquired()
+            if not model or not model.Parent then return true end
+            local b = LocalPlayer:FindFirstChild("Basket")
+            if b and #b:GetChildren() > prevBasketCount then return true end
+            local c = LocalPlayer.Character
+            if c then
+                for _, it in ipairs(c:GetChildren()) do
+                    if isEggTool(it) then return true end
                 end
             end
+            return false
+        end
 
-            if EggPickupRemote then
-                pcall(function() EggPickupRemote:FireServer(eggData.model) end)
+        local pickupOk = false
+        for _ = 1, 2 do
+            if prompt and prompt.Parent and prompt.Enabled then
+                triggerPrompt(prompt, 0.05)
             end
-
-            task.wait(0.15)
+            -- remote รับ UUID ของไข่ (ไม่ใช่ Model)
+            if EggPickupRemote and uuid then
+                pcall(function() EggPickupRemote:FireServer(uuid) end)
+            end
+            task.wait(0.12)
+            if acquired() then pickupOk = true break end
         end
 
-        if not eggData.model or not eggData.model.Parent then
-            collected = true
-        end
-
-        if collected then
+        local collected = false
+        if pickupOk then
+            -- สำคัญ: หน่วงให้เซิร์ฟเวอร์ยืนยันว่าไข่เข้าตะกร้าแล้ว ก่อนวาปกลับ
+            task.wait(0.65)
             setStatus("เก็บ " .. eggData.name .. " แล้ว กำลังวาปกลับบ้าน...")
 
-            if MyPlotCFrame then
-                pcall(function() LocalPlayer:RequestStreamAroundAsync(MyPlotCFrame.Position) end)
-                task.wait(0.15)
+            local basePos = getBasePos()
+            if basePos then
+                pcall(function() LocalPlayer:RequestStreamAroundAsync(basePos) end)
+                pcall(function()
+                    hrp.CFrame = CFrame.new(basePos)
+                    hrp.AssemblyLinearVelocity = Vector3.zero
+                    hrp.AssemblyAngularVelocity = Vector3.zero
+                end)
+                task.wait(0.2)
 
-                setStatus("กำลังวาปกลับเข้าแปลง...")
+                if not isOnMyPlot() then
+                    pcall(function()
+                        hrp.CFrame = CFrame.new(basePos)
+                        hrp.AssemblyLinearVelocity = Vector3.zero
+                    end)
+                    task.wait(0.2)
+                end
+            elseif MyPlotCFrame then
                 hrp.CFrame = MyPlotCFrame
-                task.wait(0.15)
+                task.wait(0.2)
+            end
+
+            depositBasket()
+
+            -- ปล่อยของที่ถืออยู่ก่อนหาไข่ใบถัดไป
+            pcall(function() hum:UnequipTools() end)
+            task.wait(0.08)
+
+            local b = LocalPlayer:FindFirstChild("Basket")
+            collected = not (b and #b:GetChildren() > 0)
+            if collected then
+                setStatus("เก็บ " .. eggData.name .. " เข้ากระเป๋าแล้ว")
+            else
+                setStatus("ไข่ยังค้างในตะกร้า — ลองฝากใหม่...")
             end
         else
             setStatus("เกมยังไม่ยอมรับการเก็บ " .. eggData.name .. " — ลองใหม่...")
         end
 
         setNoClip(false)
+        releaseFlight()
         return collected
     end
 
@@ -885,6 +1219,7 @@ function RideAPet.Init(Window, WindUI)
             else
                 setStatus("หยุดแล้ว")
                 setNoClip(false)
+                releaseFlight()
             end
         end,
     })
@@ -984,6 +1319,7 @@ function RideAPet.Init(Window, WindUI)
                 if not ok then
                     warn("[RideAPet] AutoFarm error: " .. tostring(err))
                     setNoClip(false)
+                    releaseFlight()
                 end
             end
             task.wait(0.6)
