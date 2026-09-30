@@ -8,7 +8,6 @@
 return {
     [124216119978534] = "games/rideapet.lua",   -- Ride a Pet
     [4924922222]      = "games/brookhaven.lua", -- Brookhaven
-    [79546208627805]  = "games/99night.lua",   -- 99 Nights in the Forest
-
-    -- เพิ่มแมพใหม่ต่อจากตรงนี้
+    [79546208627805]  = "games/99night.lua",    -- 99 Nights in the Forest (ล็อบบี้)
+    [126509999114328] = "games/99night.lua",    -- 99 Nights in the Forest (ตัวเกม)
 }
