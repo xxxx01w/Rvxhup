@@ -10,22 +10,6 @@ function NineNight.Init(Window, WindUI)
 		return
 	end
 
-	-- Preserve the source lobby behavior without affecting the shared RVX window.
-	if game.PlaceId == 79546208627805 then
-		local ok, result = pcall(function()
-			local response = game:HttpGet("https://raw.githubusercontent.com/caomod2077/Script/refs/heads/main/Fn99n_Lobby.lua")
-			local chunk = loadstring(response)
-			if type(chunk) ~= "function" then
-				error("Lobby loader returned " .. type(chunk))
-			end
-			return chunk()
-		end)
-		if not ok then
-			warn("[FN99N] Lobby script failed to load: " .. tostring(result))
-		end
-		return
-	end
-
 task.spawn(function()
 	do
 		local StarterGui = game:GetService("StarterGui")
@@ -432,6 +416,19 @@ task.spawn(function()
 		local udim22 = UDim2.fromOffset(580, 350)
 		local function fn11(I)if makefolder and isfolder and not isfolder(I)then pcall(makefolder,I);end;end
 		local function fn12(k,a)if not isfile or not readfile or not isfile(k)then return a;end;local K,S=pcall(function()return  HttpService :JSONDecode(readfile(k));end);return K and type(S)=="table"and S or a;end
+
+		-- The original source referenced this helper without defining it.
+		-- Keep config loading safe inside the RVX module.
+		local function validConfigName(name)
+			if type(name) ~= "string" then
+				return false
+			end
+			name = name:match("^%s*(.-)%s*$")
+			if name == "" or #name > 64 then
+				return false
+			end
+			return not name:find("[\\/:*?%"<>|]", 1)
+		end
 
 		local function fn13(arg, arg2)
 			if type(writefile) ~= "function" then
