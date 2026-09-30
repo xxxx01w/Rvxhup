@@ -427,7 +427,7 @@ task.spawn(function()
 			if name == "" or #name > 64 then
 				return false
 			end
-			return not name:find("[\\/:*?%"<>|]", 1)
+			return not name:find("[\\/:*?\"<>|]")
 		end
 
 		local function fn13(arg, arg2)
@@ -4994,6 +4994,7 @@ Preferences: Foxname_99Nights/WindowPrefs.json]],
 		end
 
 	end
+	end)
 end
 
 return NineNight
