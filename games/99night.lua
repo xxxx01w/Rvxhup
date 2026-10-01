@@ -11,6 +11,7 @@ function NineNight.Init(Window, WindUI)
 	end
 
 task.spawn(function()
+	local okBody, errBody = xpcall(function()
 	do
 		local StarterGui = game:GetService("StarterGui")
 		local genv = getgenv and getgenv() or _G
@@ -5613,6 +5614,20 @@ task.spawn(function()
 
 	end
 		print("[99Nights] สร้างเมนูครบทั้งหมดแล้ว")
+	end, function(e)
+		return debug.traceback(tostring(e), 2)
+	end)
+
+	if not okBody then
+		warn("[99Nights] ERROR: " .. tostring(errBody))
+		pcall(function()
+			game:GetService("StarterGui"):SetCore("SendNotification", {
+				Title = "99 Nights ผิดพลาด",
+				Text = tostring(errBody):sub(1, 200),
+				Duration = 30,
+			})
+		end)
+	end
 	end)
 end
 
