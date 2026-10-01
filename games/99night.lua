@@ -961,6 +961,7 @@ task.spawn(function()
 
 			if section then
 				arg.Section = function(arg3, arg4, ...)
+					print("[99Nights] สร้างหมวด:", type(arg4) == "table" and tostring(arg4.Title) or tostring(arg4))
 					local flag5 = type(arg4) == "table"
 					local configFlagKey
 
@@ -5611,6 +5612,7 @@ task.spawn(function()
 		end
 
 	end
+		print("[99Nights] สร้างเมนูครบทั้งหมดแล้ว")
 	end)
 end
 
