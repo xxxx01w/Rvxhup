@@ -4422,7 +4422,15 @@ task.spawn(function()
 			end
 			v.Name = "TreeCustomHealthBar"
 			v.Adornee = trunk
-			v.StudsOffset = Vector3.new(0, math.clamp(-(trunk.Size.Y / 2) + 4.5, -trunk.Size.Y / 2 + 1, trunk.Size.Y / 2 - 1), 0)
+			local half = trunk.Size.Y / 2
+			local lo, hi = -half + 1, half - 1
+			local offsetY = -half + 4.5
+			if hi >= lo then
+				offsetY = math.clamp(offsetY, lo, hi)
+			else
+				offsetY = 0 -- ต้นไม้เตี้ยมาก ใช้จุดกึ่งกลาง (กัน math.clamp ผิดพลาด)
+			end
+			v.StudsOffset = Vector3.new(0, offsetY, 0)
 			v.Enabled = false
 			v.Parent = trunk
 			tbl2[arg] = v
@@ -4478,13 +4486,13 @@ task.spawn(function()
 
 			if map then
 				for _, child in ipairs(map:GetChildren()) do
-					fn12(child)
+					pcall(fn12, child)
 				end
 
 				local connection = map.ChildAdded:Connect(function(child)
 					if flag4 then
 						task.wait(0.1)
-						fn12(child)
+						pcall(fn12, child)
 					end
 				end)
 
@@ -4494,7 +4502,7 @@ task.spawn(function()
 			local connection = Workspace.DescendantAdded:Connect(function(descendant)
 				if flag4 and descendant:IsA("Model") and (descendant:GetAttribute("Resource") == "Tree" or string.find(string.lower(descendant.Name), "tree", 1, true)) then
 					task.wait(0.1)
-					fn12(descendant)
+					pcall(fn12, descendant)
 				end
 			end)
 
