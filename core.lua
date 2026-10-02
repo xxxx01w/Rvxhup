@@ -488,63 +488,115 @@ function Core.Init(mapName)
             ConfigManager:Init(Window)
         end)
 
-        local configName = "RVX_UI"
+        local DEFAULT_CONFIG = "RVX_UI"
+        local configName = DEFAULT_CONFIG
+        local configCache = {}
+
+        -- ตัดอักขระที่ใช้ตั้งชื่อไฟล์ไม่ได้ และช่องว่างหัวท้าย
+        local function cleanConfigName(value)
+            local name = tostring(value or "")
+            name = name:gsub('[\\/:*?"<>|]', "")
+            name = name:match("^%s*(.-)%s*$") or ""
+
+            if name == "" then
+                return DEFAULT_CONFIG
+            end
+
+            return name
+        end
+
+        -- เก็บ object ไว้ใช้ซ้ำ เพราะ CreateConfig ทุกครั้งจะสั่ง AutoLoad ซ้ำถ้าไฟล์ตั้งไว้
+        local function getConfig(name)
+            if configCache[name] then
+                return configCache[name]
+            end
+
+            local ok, config = pcall(function()
+                return ConfigManager:CreateConfig(name, name == DEFAULT_CONFIG)
+            end)
+
+            if ok and type(config) == "table" then
+                configCache[name] = config
+                return config
+            end
+
+            return nil
+        end
+
+        local function getConfigs()
+            local ok, result = pcall(function()
+                return ConfigManager:AllConfigs()
+            end)
+
+            if ok and type(result) == "table" then
+                return result
+            end
+
+            return {}
+        end
+
+        local function contains(list, value)
+            for _, item in ipairs(list) do
+                if item == value then
+                    return true
+                end
+            end
+
+            return false
+        end
+
+        local initialConfigs = getConfigs()
 
         local ConfigNameInput = SettingsTab:Input({
             Title = "ชื่อ Config",
             Value = configName,
-            Placeholder = "RVX_UI",
+            Placeholder = DEFAULT_CONFIG,
 
             Callback = function(value)
-                if value and tostring(value) ~= "" then
-                    configName = tostring(value)
-                end
+                configName = cleanConfigName(value)
             end,
         })
 
-        local function getConfigs()
-            local result = {}
-
-            safeCall(function()
-                result = ConfigManager:AllConfigs()
-            end)
-
-            return result or {}
-        end
-
         local ConfigDropdown = SettingsTab:Dropdown({
             Title = "Config ที่บันทึกไว้",
-            Values = getConfigs(),
+            Values = initialConfigs,
+            Value = contains(initialConfigs, configName) and configName or nil,
             SearchBarEnabled = true,
 
             Callback = function(value)
                 if value then
-                    configName = tostring(value)
+                    configName = cleanConfigName(value)
                     safeCall(function() ConfigNameInput:Set(configName) end)
                 end
             end,
         })
+
+        local function refreshConfigList(selectName)
+            local list = getConfigs()
+
+            safeCall(function() ConfigDropdown:Refresh(list) end)
+            safeCall(function() ConfigDropdown:Select(selectName) end)
+
+            return list
+        end
 
         SettingsTab:Button({
             Title = "บันทึก Config",
             Icon = "save",
 
             Callback = function()
-                local config
-                pcall(function()
-                    config = ConfigManager:CreateConfig(configName)
-                end)
+                local name = configName
+                local config = getConfig(name)
 
-                local saved = false
+                -- Save() คืนค่าเป็น table ของข้อมูลที่บันทึก (ไม่ใช่ true)
+                local ok, data = false, nil
                 if config then
-                    pcall(function()
-                        saved = config:Save() == true
-                    end)
+                    ok, data = pcall(config.Save, config)
                 end
 
-                if saved then
-                    safeNotify("Config", "บันทึก: " .. configName, 3, "check")
-                    safeCall(function() ConfigDropdown:Refresh(ConfigManager:AllConfigs()) end)
+                if ok and type(data) == "table" then
+                    safeNotify("Config", "บันทึก: " .. name, 3, "check")
+                    refreshConfigList(name)
                 else
                     safeNotify("Config", "บันทึกไม่สำเร็จ", 3, "circle-alert")
                 end
@@ -556,31 +608,98 @@ function Core.Init(mapName)
             Icon = "folder-open",
 
             Callback = function()
-                local config
-                pcall(function()
-                    config = ConfigManager:CreateConfig(configName)
-                end)
+                local name = configName
+                local config = getConfig(name)
 
-                local loaded = false
+                -- Load() สำเร็จ = คืน table (CustomData) / ล้มเหลว = คืน false, ข้อความ
+                local ok, result, message = false, nil, nil
                 if config then
-                    pcall(function()
-                        loaded = config:Load() == true
-                    end)
+                    ok, result, message = pcall(config.Load, config)
                 end
 
-                if loaded then
+                if ok and type(result) == "table" then
                     State.Config = config
-                    safeNotify("Config", "โหลด: " .. configName, 3, "refresh-cw")
+                    safeNotify("Config", "โหลด: " .. name, 3, "refresh-cw")
+                elseif ok and tostring(message):find("does not exist") then
+                    safeNotify("Config", "ไม่พบ Config \"" .. name .. "\" (ยังไม่เคยบันทึก)", 3, "circle-alert")
                 else
-                    safeNotify("Config", "ไม่พบหรือโหลดไม่สำเร็จ", 3, "circle-alert")
+                    safeNotify("Config", "โหลดไม่สำเร็จ: " .. tostring(message or result), 3, "circle-alert")
+                end
+            end,
+        })
+
+        local function deleteConfig(name)
+            local ok, success, message = pcall(function()
+                return ConfigManager:DeleteConfig(name)
+            end)
+
+            if not (ok and success == true) then
+                local reason = tostring(success == false and message or success)
+
+                if reason:find("delfile") then
+                    reason = "Executor นี้ไม่รองรับการลบไฟล์"
+                elseif reason:find("does not exist") then
+                    reason = "ไม่พบไฟล์ Config นี้"
+                end
+
+                safeNotify("Config", "ลบไม่สำเร็จ: " .. reason, 3, "circle-alert")
+                return
+            end
+
+            -- กัน autosave ตอนปิด UI เขียนไฟล์ที่เพิ่งลบกลับมา
+            if State.Config and State.Config == configCache[name] then
+                State.Config = nil
+            end
+            configCache[name] = nil
+
+            configName = DEFAULT_CONFIG
+            safeCall(function() ConfigNameInput:Set(configName) end)
+
+            local list = refreshConfigList(nil)
+            if contains(list, DEFAULT_CONFIG) then
+                refreshConfigList(DEFAULT_CONFIG)
+            end
+
+            safeNotify("Config", "ลบ: " .. name, 3, "trash-2")
+        end
+
+        SettingsTab:Button({
+            Title = "ลบ Config",
+            Desc = "ลบไฟล์ Config ที่เลือก (กู้คืนไม่ได้)",
+            Icon = "trash-2",
+
+            Callback = function()
+                local name = configName
+
+                local shown = safeCall(function()
+                    Window:Dialog({
+                        Title = "ลบ Config",
+                        Content = "ต้องการลบ \"" .. name .. "\" ใช่หรือไม่?\nลบแล้วกู้คืนไม่ได้",
+                        Buttons = {
+                            {
+                                Title = "ยกเลิก",
+                                Variant = "Secondary",
+                                Callback = function() end,
+                            },
+                            {
+                                Title = "ลบ",
+                                Variant = "Primary",
+                                Callback = function()
+                                    deleteConfig(name)
+                                end,
+                            },
+                        },
+                    })
+                end)
+
+                if not shown then
+                    safeNotify("Config", "เปิดหน้าต่างยืนยันไม่สำเร็จ", 3, "circle-alert")
                 end
             end,
         })
 
         -- Config หลักสำหรับ autosave ตอนปิด UI
-        safeCall(function()
-            State.Config = ConfigManager:CreateConfig("RVX_UI", true)
-        end)
+        State.Config = getConfig(DEFAULT_CONFIG)
     else
         SettingsTab:Paragraph({
             Title = "Config ใช้งานไม่ได้",
