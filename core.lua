@@ -66,6 +66,9 @@ local State = {
     MapName = "RVX Hub",
     Window = nil,
     NotificationsEnabled = DEFAULTS.Notifications,
+    Theme = DEFAULTS.Theme,
+    OpenButtonEnabled = DEFAULTS.OpenButton,
+    OpenButtonScale = DEFAULTS.OpenButtonScale,
     AntiAFKConnection = nil,
     Config = nil,
 }
@@ -159,7 +162,9 @@ local function asColor3(value, fallback)
     return fallback
 end
 
-local function updateOpenButtonTheme(Window, themeName)
+-- WindUI: EditOpenButton รีเซ็ตค่าที่ไม่ได้ส่งมาเป็นค่าเริ่มต้นทุกครั้ง
+-- (สี, มุมโค้ง, ขนาด) จึงต้องส่งครบทุกค่าเสมอ ห้ามเรียกแบบส่งบางค่า
+local function applyOpenButton(Window)
     local fallbackA = Color3.fromHex("#DC143C")
     local fallbackB = Color3.fromHex("#FF4D6D")
     local accent, button = fallbackA, fallbackB
@@ -168,15 +173,22 @@ local function updateOpenButtonTheme(Window, themeName)
         return WindUI:GetThemes()
     end)
 
-    if ok and type(themes) == "table" and type(themes[themeName]) == "table" then
-        local theme = themes[themeName]
+    if ok and type(themes) == "table" and type(themes[State.Theme]) == "table" then
+        local theme = themes[State.Theme]
         accent = asColor3(theme.Accent, fallbackA)
         button = asColor3(theme.Button, accent)
     end
 
+    -- WindUI ตั้ง IsOpenButtonEnabled เป็น false ได้อย่างเดียว ต้องตั้งกลับเอง
+    Window.IsOpenButtonEnabled = State.OpenButtonEnabled
+
     safeCall(function()
         Window:EditOpenButton({
+            Enabled = State.OpenButtonEnabled,
+            OnlyMobile = false,
             CornerRadius = UDim.new(0, 14),
+            StrokeThickness = 2,
+            Scale = State.OpenButtonScale,
             Color = ColorSequence.new(accent, button),
         })
     end)
@@ -285,7 +297,7 @@ function Core.Init(mapName)
     safeCall(function() WindUI:SetTheme(DEFAULTS.Theme) end)
     safeCall(function() Window:SetBackgroundTransparency(DEFAULTS.Transparency) end)
     safeCall(function() Window:SetToggleKey(Enum.KeyCode[DEFAULTS.ToggleKey]) end)
-    updateOpenButtonTheme(Window, DEFAULTS.Theme)
+    applyOpenButton(Window)
 
     -- --------------------------------------------------------
     -- TAGS + DISCORD
@@ -374,8 +386,9 @@ function Core.Init(mapName)
                 return
             end
 
+            State.Theme = theme
             safeCall(function() WindUI:SetTheme(theme) end)
-            updateOpenButtonTheme(Window, theme)
+            applyOpenButton(Window)
         end,
     })
 
@@ -418,7 +431,8 @@ function Core.Init(mapName)
         Flag = "RVX_OPEN_BUTTON",
 
         Callback = function(state)
-            safeCall(function() Window:EditOpenButton({ Enabled = state }) end)
+            State.OpenButtonEnabled = state == true
+            applyOpenButton(Window)
         end,
     })
 
@@ -434,7 +448,8 @@ function Core.Init(mapName)
                 return
             end
 
-            safeCall(function() Window:EditOpenButton({ Scale = scale }) end)
+            State.OpenButtonScale = scale
+            applyOpenButton(Window)
         end,
     })
 
