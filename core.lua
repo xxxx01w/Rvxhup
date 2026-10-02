@@ -6,7 +6,8 @@
         local Window, WindUI = Core.Init(mapName)
         Window.RVXGameSection  -- ใช้เพิ่มแท็บของแมพ
 
-    เพิ่มเมนูโปรด (แสดงที่หน้าหลัก เลือกแล้วรัน callback ทันที):
+    ทางลัดที่หน้าหลัก: แท็บทั้งหมดที่สร้างใน Window.RVXGameSection จะถูกเพิ่มให้อัตโนมัติ
+    ถ้าต้องการเพิ่มทางลัดอื่นเอง (เลือกแล้วรัน callback ทันที):
         Window.RVXAddFavorite("Auto Egg", function() ... end)
         Window.RVXRemoveFavorite("Auto Egg")
 ]]
@@ -82,6 +83,7 @@ local State = {
     UIScale = DEFAULTS.UIScale,
     Background = DEFAULTS.Background,
     Favorites = {},
+    FavoriteOrder = {},
     FavoriteCallbacks = {},
     FavoriteDropdown = nil,
 }
@@ -356,7 +358,10 @@ function Core.RegisterFavorite(name, callback)
         return false
     end
 
-    State.Favorites[name] = true
+    if not State.Favorites[name] then
+        State.Favorites[name] = true
+        table.insert(State.FavoriteOrder, name)
+    end
 
     if type(callback) == "function" then
         State.FavoriteCallbacks[name] = callback
@@ -372,18 +377,25 @@ function Core.RemoveFavorite(name)
     State.Favorites[name] = nil
     State.FavoriteCallbacks[name] = nil
 
+    for index, item in ipairs(State.FavoriteOrder) do
+        if item == name then
+            table.remove(State.FavoriteOrder, index)
+            break
+        end
+    end
+
     refreshFavorites()
     return true
 end
 
+-- เรียงตามลำดับที่ลงทะเบียน
 function Core.GetFavorites()
     local result = {}
 
-    for name in pairs(State.Favorites) do
+    for _, name in ipairs(State.FavoriteOrder) do
         table.insert(result, name)
     end
 
-    table.sort(result)
     return result
 end
 
@@ -484,6 +496,26 @@ function Core.Init(mapName)
     -- Game modules ใช้ Window.RVXGameSection เพื่อเพิ่มแท็บของตัวเอง
     Window.RVXGameSection = GameSection
 
+    -- ทุกแท็บที่แมพสร้างใน GameSection จะถูกเพิ่มเป็นทางลัดที่หน้าหลักอัตโนมัติ
+    -- (โมดูลเกมไม่ต้องแก้โค้ด)
+    local originalTab = GameSection.Tab
+
+    if type(originalTab) == "function" then
+        GameSection.Tab = function(self, config)
+            local tab = originalTab(self, config)
+
+            if type(config) == "table" and type(tab) == "table" and config.Title then
+                Core.RegisterFavorite(config.Title, function()
+                    if type(tab.Select) == "function" then
+                        tab:Select()
+                    end
+                end)
+            end
+
+            return tab
+        end
+    end
+
     -- Game modules ใช้สองตัวนี้เพื่อเพิ่ม/ลบเมนูโปรดโดยไม่ต้องเข้าถึง Core
     Window.RVXAddFavorite = Core.RegisterFavorite
     Window.RVXRemoveFavorite = Core.RemoveFavorite
@@ -508,11 +540,11 @@ function Core.Init(mapName)
         Color = Color3.fromHex(RVX.Pink),
     })
 
-    HomeTab:Section({ Title = "Favorites", TextSize = 18 })
+    HomeTab:Section({ Title = "ทางลัด", TextSize = 18 })
 
     State.FavoriteDropdown = HomeTab:Dropdown({
-        Title = "เมนูโปรด",
-        Desc = "ทางลัดที่แมพเพิ่มไว้ เลือกเพื่อรันทันที",
+        Title = "ไปที่แท็บ",
+        Desc = "เลือกแท็บของแมพเพื่อไปที่แท็บนั้นทันที",
         Values = Core.GetFavorites(),
         SearchBarEnabled = true,
 
