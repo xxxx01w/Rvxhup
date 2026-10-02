@@ -16,6 +16,7 @@ local Core = {}
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local VirtualUser = game:GetService("VirtualUser")
+local TweenService = game:GetService("TweenService")
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -56,6 +57,12 @@ local DEFAULTS = {
     OpenButton = true,
     OpenButtonScale = 0.50,
     Notifications = true,
+    UIAnimation = true,
+    RGBMode = false,
+    UIScale = 1.00,
+    Background = "",
+    BackgroundTransparency = 1,
+    Favorites = {},
 }
 
 -- ============================================================
@@ -71,8 +78,15 @@ local State = {
     OpenButtonScale = DEFAULTS.OpenButtonScale,
     AntiAFKConnection = nil,
     Config = nil,
-    ConfigSaving = false,
-    IsClosing = false,
+    UIAnimationEnabled = DEFAULTS.UIAnimation,
+    RGBEnabled = DEFAULTS.RGBMode,
+    UIScale = DEFAULTS.UIScale,
+    Background = DEFAULTS.Background,
+    RGBTag = nil,
+    RGBToken = 0,
+    Favorites = {},
+    FavoriteCallbacks = {},
+    FavoriteDropdown = nil,
 }
 
 -- ============================================================
@@ -242,6 +256,143 @@ safeCall(function()
 end)
 
 -- ============================================================
+-- UI EFFECTS
+-- ============================================================
+
+local function applyUIScale(Window, scale)
+    local s = math.clamp(tonumber(scale) or DEFAULTS.UIScale, 0.75, 1.25)
+    State.UIScale = s
+
+    local base = UDim2.fromOffset(700, 520)
+    safeCall(function()
+        if Window.SetSize then
+            Window:SetSize(UDim2.fromOffset(
+                math.floor(base.X.Offset * s),
+                math.floor(base.Y.Offset * s)
+            ))
+        else
+            warn("[RVX Hub Core] WindUI รุ่นนี้ไม่มี Window:SetSize()")
+        end
+    end)
+end
+
+local function stopRGB()
+    State.RGBToken += 1
+    State.RGBEnabled = false
+    safeCall(function()
+        if State.RGBTag and State.RGBTag.Destroy then
+            State.RGBTag:Destroy()
+        end
+    end)
+    State.RGBTag = nil
+end
+
+local function startRGB()
+    State.RGBEnabled = true
+    State.RGBToken += 1
+    local token = State.RGBToken
+
+    safeCall(function()
+        if not State.RGBTag and State.Window then
+            State.RGBTag = State.Window:Tag({
+                Title = "RGB",
+                Radius = 8,
+                Color = Color3.fromHex(RVX.Pink),
+            })
+        end
+    end)
+
+    task.spawn(function()
+        local hue = 0
+        while State.RGBEnabled and State.RGBToken == token and State.Window do
+            hue = (hue + 0.008) % 1
+            local color = Color3.fromHSV(hue, 0.90, 1)
+            safeCall(function()
+                if State.RGBTag and State.RGBTag.SetColor then
+                    State.RGBTag:SetColor(color)
+                end
+            end)
+            task.wait(State.UIAnimationEnabled and 0.05 or 0.18)
+        end
+    end)
+end
+
+local function applyBackground(Window, background)
+    local value = tostring(background or "")
+    State.Background = value
+
+    if value == "" then
+        safeCall(function()
+            if Window.SetBackground then
+                Window:SetBackground(nil)
+            end
+        end)
+        return true
+    end
+
+    local ok = false
+    safeCall(function()
+        if type(Window.SetBackground) == "function" then
+            Window:SetBackground(value, DEFAULTS.BackgroundTransparency)
+            ok = true
+        end
+    end)
+
+    if not ok then
+        safeNotify(
+            "พื้นหลัง",
+            "WindUI รุ่นนี้ยังไม่รองรับการเปลี่ยนพื้นหลังแบบสด\nค่าจะถูกจำไว้สำหรับการเปิด Hub ครั้งถัดไป",
+            4,
+            "image"
+        )
+    end
+
+    return ok
+end
+
+-- ============================================================
+-- FAVORITES
+-- ============================================================
+
+function Core.RegisterFavorite(name, callback)
+    name = tostring(name or ""):match("^%s*(.-)%s*$") or ""
+    if name == "" then return false end
+
+    State.Favorites[name] = true
+    if type(callback) == "function" then
+        State.FavoriteCallbacks[name] = callback
+    end
+
+    if State.FavoriteDropdown then
+        local values = {}
+        for item in pairs(State.Favorites) do table.insert(values, item) end
+        table.sort(values)
+        safeCall(function() State.FavoriteDropdown:Refresh(values) end)
+    end
+    return true
+end
+
+function Core.RemoveFavorite(name)
+    name = tostring(name or "")
+    State.Favorites[name] = nil
+    State.FavoriteCallbacks[name] = nil
+    if State.FavoriteDropdown then
+        local values = {}
+        for item in pairs(State.Favorites) do table.insert(values, item) end
+        table.sort(values)
+        safeCall(function() State.FavoriteDropdown:Refresh(values) end)
+    end
+    return true
+end
+
+function Core.GetFavorites()
+    local result = {}
+    for name in pairs(State.Favorites) do table.insert(result, name) end
+    table.sort(result)
+    return result
+end
+
+-- ============================================================
 -- INIT
 -- ============================================================
 
@@ -264,8 +415,8 @@ function Core.Init(mapName)
         Folder = "RVXHub",
         Size = UDim2.fromOffset(700, 520),
         Transparent = true,
-        Background = "",
-        BackgroundImageTransparency = 1,
+        Background = State.Background,
+        BackgroundImageTransparency = DEFAULTS.BackgroundTransparency,
         Theme = DEFAULTS.Theme,
         NewElements = true,
         HideSearchBar = false,
@@ -354,6 +505,35 @@ function Core.Init(mapName)
         Color = Color3.fromHex(RVX.Pink),
     })
 
+    HomeTab:Section({ Title = "⭐ Favorites", TextSize = 18 })
+
+    local favoriteValues = Core.GetFavorites()
+    State.FavoriteDropdown = HomeTab:Dropdown({
+        Title = "เมนูโปรด",
+        Values = favoriteValues,
+        SearchBarEnabled = true,
+        Callback = function(value)
+            local callback = State.FavoriteCallbacks[value]
+            if type(callback) == "function" then
+                safeCall(callback)
+            else
+                safeNotify("Favorites", "เลือก: " .. tostring(value), 2, "star")
+            end
+        end,
+    })
+
+    HomeTab:Paragraph({
+        Title = "👑 Hub Profile",
+        Desc = "RVX Hub\n" ..
+            VERSION ..
+            "\nผู้พัฒนา: RVX Team\n" ..
+            "Discord: RVX Community\n" ..
+            "แมพปัจจุบัน: " .. State.MapName,
+        Image = "crown",
+        ImageSize = 24,
+        Color = Color3.fromHex(RVX.Purple),
+    })
+
     -- --------------------------------------------------------
     -- SETTINGS (แท็บเดียว)
     -- --------------------------------------------------------
@@ -394,6 +574,58 @@ function Core.Init(mapName)
         end,
     })
 
+    local UIPresetDropdown = SettingsTab:Dropdown({
+        Title = "UI Preset",
+        Values = { "RVX Classic", "Purple Neon", "Compact", "Large" },
+        Value = "RVX Classic",
+        Flag = "RVX_UI_PRESET",
+
+        Callback = function(preset)
+            local purpleTheme = DEFAULTS.Theme
+            for themeName in pairs(WindUI:GetThemes()) do
+                if string.find(string.lower(themeName), "purple", 1, true) then
+                    purpleTheme = themeName
+                    break
+                end
+            end
+
+            local presets = {
+                ["RVX Classic"] = { Theme = DEFAULTS.Theme, Transparency = DEFAULTS.Transparency, Scale = 1.00 },
+                ["Purple Neon"] = { Theme = purpleTheme, Transparency = 0.12, Scale = 1.00 },
+                ["Compact"] = { Theme = DEFAULTS.Theme, Transparency = 0.16, Scale = 0.85 },
+                ["Large"] = { Theme = DEFAULTS.Theme, Transparency = 0.05, Scale = 1.15 },
+            }
+
+            local cfg = presets[preset]
+            if not cfg then return end
+
+            safeCall(function()
+                if WindUI:GetThemes()[cfg.Theme] then
+                    State.Theme = cfg.Theme
+                    WindUI:SetTheme(cfg.Theme)
+                    ThemeDropdown:Select(cfg.Theme)
+                end
+            end)
+            safeCall(function() Window:SetBackgroundTransparency(cfg.Transparency) end)
+            applyUIScale(Window, cfg.Scale)
+        end,
+    })
+
+    local RGBToggle = SettingsTab:Toggle({
+        Title = "RGB Mode",
+        Desc = "เปลี่ยนสีแท็ก RVX แบบไล่สีอัตโนมัติ",
+        Value = DEFAULTS.RGBMode,
+        Flag = "RVX_RGB_MODE",
+
+        Callback = function(enabled)
+            if enabled then
+                startRGB()
+            else
+                stopRGB()
+            end
+        end,
+    })
+
     local TransparencySlider = SettingsTab:Slider({
         Title = "ความโปร่งใสของ UI",
         Step = 0.05,
@@ -407,6 +639,41 @@ function Core.Init(mapName)
             end
 
             safeCall(function() Window:SetBackgroundTransparency(transparency) end)
+        end,
+    })
+
+    local UIScaleSlider = SettingsTab:Slider({
+        Title = "ขนาด UI",
+        Desc = "ปรับขนาดหน้าต่างโดยไม่เปลี่ยนระบบภายใน",
+        Step = 0.05,
+        Value = { Min = 0.75, Max = 1.25, Default = DEFAULTS.UIScale },
+        Flag = "RVX_UI_SCALE",
+
+        Callback = function(value)
+            applyUIScale(Window, value)
+        end,
+    })
+
+    local UIAnimationToggle = SettingsTab:Toggle({
+        Title = "UI Animation",
+        Desc = "ปรับความเร็วของเอฟเฟกต์ RGB",
+        Value = DEFAULTS.UIAnimation,
+        Flag = "RVX_UI_ANIMATION",
+
+        Callback = function(enabled)
+            State.UIAnimationEnabled = enabled == true
+        end,
+    })
+
+    local BackgroundInput = SettingsTab:Input({
+        Title = "Custom Background",
+        Desc = "ใส่ URL รูปภาพพื้นหลัง",
+        Placeholder = "https://... หรือ rbxassetid://...",
+        Value = DEFAULTS.Background,
+        Flag = "RVX_BACKGROUND",
+
+        Callback = function(value)
+            applyBackground(Window, value)
         end,
     })
 
@@ -587,22 +854,13 @@ function Core.Init(mapName)
             Icon = "save",
 
             Callback = function()
-                local name = cleanConfigName(configName)
-                configName = name
-
-                if State.ConfigSaving then
-                    safeNotify("Config", "กำลังบันทึก Config อยู่", 2, "clock-3")
-                    return
-                end
-
+                local name = configName
                 local config = getConfig(name)
 
                 -- Save() คืนค่าเป็น table ของข้อมูลที่บันทึก (ไม่ใช่ true)
                 local ok, data = false, nil
                 if config then
-                    State.ConfigSaving = true
                     ok, data = pcall(config.Save, config)
-                    State.ConfigSaving = false
                 end
 
                 if ok and type(data) == "table" then
@@ -619,8 +877,7 @@ function Core.Init(mapName)
             Icon = "folder-open",
 
             Callback = function()
-                local name = cleanConfigName(configName)
-                configName = name
+                local name = configName
                 local config = getConfig(name)
 
                 -- Load() สำเร็จ = คืน table (CustomData) / ล้มเหลว = คืน false, ข้อความ
@@ -735,6 +992,12 @@ function Core.Init(mapName)
             safeCall(function() OpenButtonToggle:Set(DEFAULTS.OpenButton) end)
             safeCall(function() OpenButtonScaleSlider:Set(DEFAULTS.OpenButtonScale) end)
             safeCall(function() NotificationToggle:Set(DEFAULTS.Notifications) end)
+            safeCall(function() UIPresetDropdown:Select("RVX Classic") end)
+            safeCall(function() RGBToggle:Set(DEFAULTS.RGBMode) end)
+            safeCall(function() UIScaleSlider:Set(DEFAULTS.UIScale) end)
+            safeCall(function() UIAnimationToggle:Set(DEFAULTS.UIAnimation) end)
+            safeCall(function() BackgroundInput:Set(DEFAULTS.Background) end)
+            applyUIScale(Window, DEFAULTS.UIScale)
 
             setAntiAFK(false)
 
@@ -748,24 +1011,13 @@ function Core.Init(mapName)
 
     safeCall(function()
         Window:OnClose(function()
-            if State.IsClosing then
-                return
-            end
-
-            State.IsClosing = true
-
-            if State.Config and State.Config.Save and not State.ConfigSaving then
-                State.ConfigSaving = true
+            stopRGB()
+            State.RGBTag = nil
+            if State.Config and State.Config.Save then
                 pcall(function()
                     State.Config:Save()
                 end)
-                State.ConfigSaving = false
             end
-
-            -- Window ถูกปิดแล้ว ไม่ควรให้ Core.Init() คืน instance เดิมที่ใช้งานต่อไม่ได้
-            State.Config = nil
-            State.Window = nil
-            State.IsClosing = false
         end)
     end)
 
