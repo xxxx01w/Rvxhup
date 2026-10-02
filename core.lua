@@ -51,7 +51,7 @@ local RVX = {
     ThemeIcon    = "#F09CFF",
 }
 
-local VERSION = "Version 1"
+local VERSION = "Version 1.5"
 local DISCORD_URL = "https://discord.gg/WQePykh3yJ"
 
 local DEFAULTS = {
