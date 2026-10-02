@@ -260,7 +260,7 @@ function Core.Init(mapName)
         IconSize = 38,
         Author = State.MapName,
         Folder = "RVXHub",
-        Size = UDim2.fromOffset(700, 520),
+        Size = UDim2.fromOffset(760, 560),
         Transparent = true,
         Background = "",
         BackgroundImageTransparency = 1,
@@ -277,8 +277,8 @@ function Core.Init(mapName)
             OnlyMobile = false,
             Scale = DEFAULTS.OpenButtonScale,
             Color = ColorSequence.new(
-                Color3.fromHex("#DC143C"),
-                Color3.fromHex("#FF4D6D")
+                Color3.fromHex(RVX.ThemeButton),
+                Color3.fromHex(RVX.Pink)
             ),
         },
 
@@ -325,9 +325,9 @@ function Core.Init(mapName)
     -- SECTIONS (หน้าหลัก / แมพ / การตั้งค่า)
     -- --------------------------------------------------------
 
-    local HomeSection = Window:Section({ Title = "RVX HUB", Opened = true })
-    local GameSection = Window:Section({ Title = "แมพ", Opened = true })
-    local SettingsSection = Window:Section({ Title = "การตั้งค่า", Opened = true })
+    local HomeSection = Window:Section({ Title = "RVX HUB • HOME", Opened = true })
+    local GameSection = Window:Section({ Title = "แมพ • GAMES", Opened = true })
+    local SettingsSection = Window:Section({ Title = "ตั้งค่า • SETTINGS", Opened = true })
 
     -- Game modules ใช้ Window.RVXGameSection เพื่อเพิ่มแท็บของตัวเอง
     Window.RVXGameSection = GameSection
@@ -342,14 +342,32 @@ function Core.Init(mapName)
     })
 
     HomeTab:Paragraph({
-        Title = "ยินดีต้อนรับสู่ RVX Hub",
+        Title = "RVX HUB",
         Desc =
-            "สวัสดี, " .. getPlayerDisplay() ..
-            "\nแมพ: " .. State.MapName ..
-            "\nอุปกรณ์: " .. getDeviceName(),
+            "ยินดีต้อนรับกลับ, " .. getPlayerDisplay() ..
+            "\nศูนย์ควบคุมสำหรับจัดการระบบของคุณแบบเป็นระเบียบและใช้งานง่าย",
         Image = "sparkles",
-        ImageSize = 24,
+        ImageSize = 28,
         Color = Color3.fromHex(RVX.Pink),
+    })
+
+    HomeTab:Paragraph({
+        Title = "สถานะเซสชัน",
+        Desc =
+            "แมพปัจจุบัน: " .. State.MapName ..
+            "\nอุปกรณ์: " .. getDeviceName() ..
+            "\nCore: Online • WindUI: Loaded",
+        Image = "activity",
+        ImageSize = 22,
+        Color = Color3.fromHex(RVX.ThemeAccent),
+    })
+
+    HomeTab:Paragraph({
+        Title = "RVX • PREMIUM",
+        Desc = "ออกแบบโดยเน้นความเรียบหรู ความชัดเจน และการใช้งานที่รวดเร็ว\nพร้อมรองรับ Game Module ผ่าน RVXGameSection โดยไม่รบกวนระบบ Core",
+        Image = "gem",
+        ImageSize = 22,
+        Color = Color3.fromHex(RVX.Magenta),
     })
 
     -- --------------------------------------------------------
@@ -362,7 +380,15 @@ function Core.Init(mapName)
     })
 
     -- ===== หน้าตา =====
-    SettingsTab:Section({ Title = "หน้าตา", TextSize = 18 })
+    SettingsTab:Paragraph({
+        Title = "ปรับแต่ง RVX Hub",
+        Desc = "ปรับหน้าตาและการควบคุมให้เหมาะกับสไตล์การใช้งานของคุณ โดยค่าระบบเกมยังคงแยกจาก Core",
+        Image = "palette",
+        ImageSize = 22,
+        Color = Color3.fromHex(RVX.Purple),
+    })
+
+    SettingsTab:Section({ Title = "หน้าตา • APPEARANCE", TextSize = 18 })
 
     local themeNames = {}
 
@@ -409,7 +435,7 @@ function Core.Init(mapName)
     })
 
     -- ===== ปุ่มและการควบคุม =====
-    SettingsTab:Section({ Title = "ปุ่มและการควบคุม", TextSize = 18 })
+    SettingsTab:Section({ Title = "ปุ่มและการควบคุม • CONTROLS", TextSize = 18 })
 
     local ToggleKeyElement = SettingsTab:Keybind({
         Title = "ปุ่มเปิด / ปิด UI",
@@ -454,7 +480,7 @@ function Core.Init(mapName)
     })
 
     -- ===== ระบบ =====
-    SettingsTab:Section({ Title = "ระบบ", TextSize = 18 })
+    SettingsTab:Section({ Title = "ระบบ • SYSTEM", TextSize = 18 })
 
     local NotificationToggle = SettingsTab:Toggle({
         Title = "การแจ้งเตือน",
@@ -479,7 +505,7 @@ function Core.Init(mapName)
     })
 
     -- ===== Config =====
-    SettingsTab:Section({ Title = "Config", TextSize = 18 })
+    SettingsTab:Section({ Title = "Config • PROFILES", TextSize = 18 })
 
     local ConfigManager = Window.ConfigManager
 
@@ -711,6 +737,8 @@ function Core.Init(mapName)
     end
 
     -- ===== รีเซ็ต =====
+    SettingsTab:Section({ Title = "รีเซ็ต • RESET", TextSize = 18 })
+
     SettingsTab:Button({
         Title = "รีเซ็ตการตั้งค่า UI",
         Desc = "คืนค่าหน้าตา ปุ่มลัด และปุ่มลอยเป็นค่าเริ่มต้น",
@@ -749,4 +777,3 @@ function Core.Init(mapName)
     return Window, WindUI
 end
 
-return Core
