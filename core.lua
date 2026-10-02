@@ -5,6 +5,10 @@
     Game modules ใช้แค่:
         local Window, WindUI = Core.Init(mapName)
         Window.RVXGameSection  -- ใช้เพิ่มแท็บของแมพ
+
+    เพิ่มเมนูโปรด (แสดงที่หน้าหลัก เลือกแล้วรัน callback ทันที):
+        Window.RVXAddFavorite("Auto Egg", function() ... end)
+        Window.RVXRemoveFavorite("Auto Egg")
 ]]
 
 local Core = {}
@@ -16,7 +20,6 @@ local Core = {}
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local VirtualUser = game:GetService("VirtualUser")
-local TweenService = game:GetService("TweenService")
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -57,12 +60,10 @@ local DEFAULTS = {
     OpenButton = true,
     OpenButtonScale = 0.50,
     Notifications = true,
-    UIAnimation = true,
-    RGBMode = false,
     UIScale = 1.00,
     Background = "",
-    BackgroundTransparency = 1,
-    Favorites = {},
+    BackgroundHidden = 1,    -- ไม่มีรูปพื้นหลัง
+    BackgroundShown = 0.60,  -- มีรูปพื้นหลัง
 }
 
 -- ============================================================
@@ -78,12 +79,8 @@ local State = {
     OpenButtonScale = DEFAULTS.OpenButtonScale,
     AntiAFKConnection = nil,
     Config = nil,
-    UIAnimationEnabled = DEFAULTS.UIAnimation,
-    RGBEnabled = DEFAULTS.RGBMode,
     UIScale = DEFAULTS.UIScale,
     Background = DEFAULTS.Background,
-    RGBTag = nil,
-    RGBToken = 0,
     Favorites = {},
     FavoriteCallbacks = {},
     FavoriteDropdown = nil,
@@ -119,6 +116,20 @@ local function safeNotify(title, content, duration, icon)
             Icon = icon or "sparkles",
         })
     end)
+end
+
+-- ลบอีโมจิออกจากข้อความ (เช่น ชื่อแมพที่โมดูลส่งเข้ามา)
+local function stripEmoji(text)
+    text = tostring(text or "")
+    text = text:gsub("[\240-\247][\128-\191][\128-\191][\128-\191]", "") -- อีโมจิ 4 ไบต์
+    text = text:gsub("\226[\134-\175][\128-\191]", "")                   -- สัญลักษณ์ เช่น นาฬิกาทราย ดาว หัวใจ
+    text = text:gsub("\239\184[\142\143]", "")                           -- variation selector
+    text = text:gsub("\226\128\141", "")                                 -- zero width joiner
+    text = text:gsub("%[%s*%]", "")                                      -- วงเล็บว่างที่เหลือ
+    text = text:gsub("%(%s*%)", "")
+    text = text:gsub("%s+", " ")
+
+    return text:match("^%s*(.-)%s*$") or text
 end
 
 local function normalizeKey(value)
@@ -256,138 +267,122 @@ safeCall(function()
 end)
 
 -- ============================================================
--- UI EFFECTS
+-- UI SCALE / BACKGROUND
 -- ============================================================
 
 local function applyUIScale(Window, scale)
     local s = math.clamp(tonumber(scale) or DEFAULTS.UIScale, 0.75, 1.25)
     State.UIScale = s
 
-    local base = UDim2.fromOffset(700, 520)
     safeCall(function()
-        if Window.SetSize then
-            Window:SetSize(UDim2.fromOffset(
-                math.floor(base.X.Offset * s),
-                math.floor(base.Y.Offset * s)
-            ))
-        else
-            warn("[RVX Hub Core] WindUI รุ่นนี้ไม่มี Window:SetSize()")
-        end
+        Window:SetSize(UDim2.fromOffset(
+            math.floor(700 * s),
+            math.floor(520 * s)
+        ))
     end)
 end
 
-local function stopRGB()
-    State.RGBToken += 1
-    State.RGBEnabled = false
-    safeCall(function()
-        if State.RGBTag and State.RGBTag.Destroy then
-            State.RGBTag:Destroy()
+-- รับ: เลขรหัสรูป, rbxassetid://..., หรือ URL (ดาวน์โหลดแล้วใช้ getcustomasset)
+local function resolveImage(value)
+    if value:match("^%d+$") then
+        return "rbxassetid://" .. value
+    end
+
+    if value:match("^https?://") then
+        local ok, asset = pcall(function()
+            local data = game:HttpGet(value)
+
+            if not isfolder("RVXHub") then
+                makefolder("RVXHub")
+            end
+
+            writefile("RVXHub/background.png", data)
+            return getcustomasset("RVXHub/background.png")
+        end)
+
+        if ok and asset then
+            return asset
         end
-    end)
-    State.RGBTag = nil
+
+        return nil
+    end
+
+    return value
 end
 
-local function startRGB()
-    State.RGBEnabled = true
-    State.RGBToken += 1
-    local token = State.RGBToken
-
-    safeCall(function()
-        if not State.RGBTag and State.Window then
-            State.RGBTag = State.Window:Tag({
-                Title = "RGB",
-                Radius = 8,
-                Color = Color3.fromHex(RVX.Pink),
-            })
-        end
-    end)
-
-    task.spawn(function()
-        local hue = 0
-        while State.RGBEnabled and State.RGBToken == token and State.Window do
-            hue = (hue + 0.008) % 1
-            local color = Color3.fromHSV(hue, 0.90, 1)
-            safeCall(function()
-                if State.RGBTag and State.RGBTag.SetColor then
-                    State.RGBTag:SetColor(color)
-                end
-            end)
-            task.wait(State.UIAnimationEnabled and 0.05 or 0.18)
-        end
-    end)
-end
-
+-- WindUI ไม่มี Window:SetBackground ต้องใช้ SetBackgroundImage + ปรับความโปร่งใสของรูป
 local function applyBackground(Window, background)
-    local value = tostring(background or "")
+    local value = tostring(background or ""):match("^%s*(.-)%s*$") or ""
     State.Background = value
 
     if value == "" then
         safeCall(function()
-            if Window.SetBackground then
-                Window:SetBackground(nil)
-            end
+            Window:SetBackgroundImage("")
+            Window:SetBackgroundImageTransparency(DEFAULTS.BackgroundHidden)
         end)
-        return true
+        return
     end
 
-    local ok = false
+    local image = resolveImage(value)
+
+    if not image then
+        safeNotify("พื้นหลัง", "โหลดรูปจาก URL ไม่สำเร็จ หรือ Executor ไม่รองรับ", 3, "image")
+        return
+    end
+
     safeCall(function()
-        if type(Window.SetBackground) == "function" then
-            Window:SetBackground(value, DEFAULTS.BackgroundTransparency)
-            ok = true
-        end
+        Window:SetBackgroundImage(image)
+        Window:SetBackgroundImageTransparency(DEFAULTS.BackgroundShown)
     end)
-
-    if not ok then
-        safeNotify(
-            "พื้นหลัง",
-            "WindUI รุ่นนี้ยังไม่รองรับการเปลี่ยนพื้นหลังแบบสด\nค่าจะถูกจำไว้สำหรับการเปิด Hub ครั้งถัดไป",
-            4,
-            "image"
-        )
-    end
-
-    return ok
 end
 
 -- ============================================================
 -- FAVORITES
 -- ============================================================
 
+local function refreshFavorites()
+    if not State.FavoriteDropdown then
+        return
+    end
+
+    local values = Core.GetFavorites()
+    safeCall(function() State.FavoriteDropdown:Refresh(values) end)
+end
+
 function Core.RegisterFavorite(name, callback)
     name = tostring(name or ""):match("^%s*(.-)%s*$") or ""
-    if name == "" then return false end
+
+    if name == "" then
+        return false
+    end
 
     State.Favorites[name] = true
+
     if type(callback) == "function" then
         State.FavoriteCallbacks[name] = callback
     end
 
-    if State.FavoriteDropdown then
-        local values = {}
-        for item in pairs(State.Favorites) do table.insert(values, item) end
-        table.sort(values)
-        safeCall(function() State.FavoriteDropdown:Refresh(values) end)
-    end
+    refreshFavorites()
     return true
 end
 
 function Core.RemoveFavorite(name)
     name = tostring(name or "")
+
     State.Favorites[name] = nil
     State.FavoriteCallbacks[name] = nil
-    if State.FavoriteDropdown then
-        local values = {}
-        for item in pairs(State.Favorites) do table.insert(values, item) end
-        table.sort(values)
-        safeCall(function() State.FavoriteDropdown:Refresh(values) end)
-    end
+
+    refreshFavorites()
     return true
 end
 
 function Core.GetFavorites()
     local result = {}
-    for name in pairs(State.Favorites) do table.insert(result, name) end
+
+    for name in pairs(State.Favorites) do
+        table.insert(result, name)
+    end
+
     table.sort(result)
     return result
 end
@@ -397,7 +392,11 @@ end
 -- ============================================================
 
 function Core.Init(mapName)
-    State.MapName = tostring(mapName or "RVX Hub")
+    State.MapName = stripEmoji(mapName or "RVX Hub")
+
+    if State.MapName == "" then
+        State.MapName = "RVX Hub"
+    end
 
     if State.Window then
         return State.Window, WindUI
@@ -416,7 +415,7 @@ function Core.Init(mapName)
         Size = UDim2.fromOffset(700, 520),
         Transparent = true,
         Background = State.Background,
-        BackgroundImageTransparency = DEFAULTS.BackgroundTransparency,
+        BackgroundImageTransparency = DEFAULTS.BackgroundHidden,
         Theme = DEFAULTS.Theme,
         NewElements = true,
         HideSearchBar = false,
@@ -485,6 +484,10 @@ function Core.Init(mapName)
     -- Game modules ใช้ Window.RVXGameSection เพื่อเพิ่มแท็บของตัวเอง
     Window.RVXGameSection = GameSection
 
+    -- Game modules ใช้สองตัวนี้เพื่อเพิ่ม/ลบเมนูโปรดโดยไม่ต้องเข้าถึง Core
+    Window.RVXAddFavorite = Core.RegisterFavorite
+    Window.RVXRemoveFavorite = Core.RemoveFavorite
+
     -- --------------------------------------------------------
     -- HOME
     -- --------------------------------------------------------
@@ -505,30 +508,29 @@ function Core.Init(mapName)
         Color = Color3.fromHex(RVX.Pink),
     })
 
-    HomeTab:Section({ Title = "⭐ Favorites", TextSize = 18 })
+    HomeTab:Section({ Title = "Favorites", TextSize = 18 })
 
-    local favoriteValues = Core.GetFavorites()
     State.FavoriteDropdown = HomeTab:Dropdown({
         Title = "เมนูโปรด",
-        Values = favoriteValues,
+        Desc = "ทางลัดที่แมพเพิ่มไว้ เลือกเพื่อรันทันที",
+        Values = Core.GetFavorites(),
         SearchBarEnabled = true,
+
         Callback = function(value)
             local callback = State.FavoriteCallbacks[value]
+
             if type(callback) == "function" then
                 safeCall(callback)
-            else
-                safeNotify("Favorites", "เลือก: " .. tostring(value), 2, "star")
             end
         end,
     })
 
     HomeTab:Paragraph({
-        Title = "👑 Hub Profile",
-        Desc = "RVX Hub\n" ..
+        Title = "Hub Profile",
+        Desc =
+            "RVX Hub\n" ..
             VERSION ..
-            "\nผู้พัฒนา: RVX Team\n" ..
-            "Discord: RVX Community\n" ..
-            "แมพปัจจุบัน: " .. State.MapName,
+            "\nแมพปัจจุบัน: " .. State.MapName,
         Image = "crown",
         ImageSize = 24,
         Color = Color3.fromHex(RVX.Purple),
@@ -582,6 +584,7 @@ function Core.Init(mapName)
 
         Callback = function(preset)
             local purpleTheme = DEFAULTS.Theme
+
             for themeName in pairs(WindUI:GetThemes()) do
                 if string.find(string.lower(themeName), "purple", 1, true) then
                     purpleTheme = themeName
@@ -597,32 +600,21 @@ function Core.Init(mapName)
             }
 
             local cfg = presets[preset]
-            if not cfg then return end
+            if not cfg then
+                return
+            end
 
             safeCall(function()
                 if WindUI:GetThemes()[cfg.Theme] then
                     State.Theme = cfg.Theme
                     WindUI:SetTheme(cfg.Theme)
                     ThemeDropdown:Select(cfg.Theme)
+                    applyOpenButton(Window)
                 end
             end)
+
             safeCall(function() Window:SetBackgroundTransparency(cfg.Transparency) end)
             applyUIScale(Window, cfg.Scale)
-        end,
-    })
-
-    local RGBToggle = SettingsTab:Toggle({
-        Title = "RGB Mode",
-        Desc = "เปลี่ยนสีแท็ก RVX แบบไล่สีอัตโนมัติ",
-        Value = DEFAULTS.RGBMode,
-        Flag = "RVX_RGB_MODE",
-
-        Callback = function(enabled)
-            if enabled then
-                startRGB()
-            else
-                stopRGB()
-            end
         end,
     })
 
@@ -644,7 +636,7 @@ function Core.Init(mapName)
 
     local UIScaleSlider = SettingsTab:Slider({
         Title = "ขนาด UI",
-        Desc = "ปรับขนาดหน้าต่างโดยไม่เปลี่ยนระบบภายใน",
+        Desc = "ปรับขนาดหน้าต่าง",
         Step = 0.05,
         Value = { Min = 0.75, Max = 1.25, Default = DEFAULTS.UIScale },
         Flag = "RVX_UI_SCALE",
@@ -654,20 +646,9 @@ function Core.Init(mapName)
         end,
     })
 
-    local UIAnimationToggle = SettingsTab:Toggle({
-        Title = "UI Animation",
-        Desc = "ปรับความเร็วของเอฟเฟกต์ RGB",
-        Value = DEFAULTS.UIAnimation,
-        Flag = "RVX_UI_ANIMATION",
-
-        Callback = function(enabled)
-            State.UIAnimationEnabled = enabled == true
-        end,
-    })
-
     local BackgroundInput = SettingsTab:Input({
         Title = "Custom Background",
-        Desc = "ใส่ URL รูปภาพพื้นหลัง",
+        Desc = "รหัสรูป, rbxassetid:// หรือ URL รูปภาพ (เว้นว่างเพื่อลบ)",
         Placeholder = "https://... หรือ rbxassetid://...",
         Value = DEFAULTS.Background,
         Flag = "RVX_BACKGROUND",
@@ -987,17 +968,20 @@ function Core.Init(mapName)
 
         Callback = function()
             safeCall(function() ThemeDropdown:Select(DEFAULTS.Theme) end)
+            safeCall(function() UIPresetDropdown:Select("RVX Classic") end)
             safeCall(function() TransparencySlider:Set(DEFAULTS.Transparency) end)
+            safeCall(function() UIScaleSlider:Set(DEFAULTS.UIScale) end)
+            safeCall(function() BackgroundInput:Set(DEFAULTS.Background) end)
             safeCall(function() ToggleKeyElement:Set(DEFAULTS.ToggleKey) end)
             safeCall(function() OpenButtonToggle:Set(DEFAULTS.OpenButton) end)
             safeCall(function() OpenButtonScaleSlider:Set(DEFAULTS.OpenButtonScale) end)
             safeCall(function() NotificationToggle:Set(DEFAULTS.Notifications) end)
-            safeCall(function() UIPresetDropdown:Select("RVX Classic") end)
-            safeCall(function() RGBToggle:Set(DEFAULTS.RGBMode) end)
-            safeCall(function() UIScaleSlider:Set(DEFAULTS.UIScale) end)
-            safeCall(function() UIAnimationToggle:Set(DEFAULTS.UIAnimation) end)
-            safeCall(function() BackgroundInput:Set(DEFAULTS.Background) end)
+
+            State.Theme = DEFAULTS.Theme
+            safeCall(function() WindUI:SetTheme(DEFAULTS.Theme) end)
+            applyOpenButton(Window)
             applyUIScale(Window, DEFAULTS.UIScale)
+            applyBackground(Window, DEFAULTS.Background)
 
             setAntiAFK(false)
 
@@ -1011,8 +995,6 @@ function Core.Init(mapName)
 
     safeCall(function()
         Window:OnClose(function()
-            stopRGB()
-            State.RGBTag = nil
             if State.Config and State.Config.Save then
                 pcall(function()
                     State.Config:Save()
